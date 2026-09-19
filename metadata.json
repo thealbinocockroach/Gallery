@@ -1,0 +1,7 @@
+{
+  "name": "Gallery Pro",
+  "description": "Fast, local-first neobrutalist gallery with photo editing, custom fonts, Samsung-style gestures, dedicated video player, and trash bin.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
