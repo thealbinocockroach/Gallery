@@ -526,14 +526,14 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     fun deletePermanently(id: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.deletePermanently(id)
+            repository.deletePermanently(getApplication(), id)
             showFeedback("Permanently deleted")
         }
     }
 
     fun emptyTrash() {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.emptyTrash()
+            repository.emptyTrash(getApplication())
             showFeedback("Trash bin emptied")
         }
     }

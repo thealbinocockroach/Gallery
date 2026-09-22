@@ -24,6 +24,9 @@ interface MediaDao {
     @Query("SELECT * FROM media_items WHERE isInTrash = 1 ORDER BY trashTimestamp DESC")
     fun getTrashMedia(): Flow<List<MediaItem>>
 
+    @Query("SELECT * FROM media_items WHERE isInTrash = 1")
+    suspend fun getTrashMediaOnce(): List<MediaItem>
+
     @Query("SELECT * FROM media_items WHERE id = :id LIMIT 1")
     suspend fun getMediaById(id: Long): MediaItem?
 
@@ -131,8 +134,10 @@ interface MediaDao {
     @Query("DELETE FROM albums WHERE id = :id AND isSystem = 0")
     suspend fun deleteAlbum(id: Long)
 
+    // Only active (non-trashed) items keep a system album alive — otherwise an
+    // album of purely trashed photos would linger with a trashed cover.
     @Query(
-        "DELETE FROM albums WHERE isSystem = 1 AND name NOT IN (SELECT DISTINCT albumName FROM media_items)"
+        "DELETE FROM albums WHERE isSystem = 1 AND name NOT IN (SELECT DISTINCT albumName FROM media_items WHERE isInTrash = 0)"
     )
     suspend fun deleteEmptySystemAlbums()
 

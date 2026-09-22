@@ -100,8 +100,12 @@ fun AlbumsScreen(
             }
 
             // Group once for all album tiles — avoids re-filtering mediaList per album on every recomposition.
+            // mediaList carries active items only, so both structures exclude trashed media.
             val albumMediaMap = remember(mediaList) {
                 mediaList.groupBy { it.albumName }
+            }
+            val activeUris = remember(mediaList) {
+                mediaList.map { it.uri }.toHashSet()
             }
 
             LazyVerticalGrid(
@@ -117,8 +121,10 @@ fun AlbumsScreen(
                 items(albums, key = { it.id }) { album ->
                     val albumItems = albumMediaMap[album.name] ?: emptyList()
                     // Latest image in album is the cover — not the stored coverUri which may be stale.
+                    // Stored cover is only trusted if it still points at an active (non-trashed) item.
                     val latestItem = albumItems.maxByOrNull { it.dateTaken }
-                    val coverUri = latestItem?.uri ?: album.coverUri.takeIf { it.isNotBlank() }
+                    val coverUri = latestItem?.uri
+                        ?: album.coverUri.takeIf { it.isNotBlank() && it in activeUris }
                     val isVideoCover = latestItem?.isVideo ?: false
                     AlbumCard(
                         album = album,

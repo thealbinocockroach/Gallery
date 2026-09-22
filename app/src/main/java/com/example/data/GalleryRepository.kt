@@ -160,12 +160,40 @@ class GalleryRepository(private val mediaDao: MediaDao) {
         mediaDao.restoreFromTrash(id)
     }
 
-    suspend fun deletePermanently(id: Long) {
+    /**
+     * Permanent delete removes the DB row AND the underlying file, so a later
+     * device sync can't resurrect the item back into the grids. Best-effort on
+     * the file (system-owned MediaStore rows may need user consent); the row
+     * and its cached thumbnails are always dropped.
+     */
+    suspend fun deletePermanently(context: Context, id: Long) {
+        val item = mediaDao.getMediaById(id)
+        if (item != null) {
+            deleteBackingFile(context, item.uri)
+            ThumbnailCache.remove(item.uri)
+        }
         mediaDao.deletePermanently(id)
     }
 
-    suspend fun emptyTrash() {
+    suspend fun emptyTrash(context: Context) {
+        val trashed = mediaDao.getTrashMediaOnce()
+        trashed.forEach { item ->
+            deleteBackingFile(context, item.uri)
+            ThumbnailCache.remove(item.uri)
+        }
         mediaDao.emptyTrash()
+    }
+
+    private fun deleteBackingFile(context: Context, uriString: String) {
+        try {
+            val parsed = Uri.parse(uriString)
+            when (parsed.scheme) {
+                "content" -> context.contentResolver.delete(parsed, null, null)
+                "file" -> parsed.path?.let { File(it).delete() }
+            }
+        } catch (_: Exception) {
+            // Best-effort: row + thumbnail cache are still dropped below.
+        }
     }
 
     suspend fun toggleFavorite(id: Long, isFavorite: Boolean) {
