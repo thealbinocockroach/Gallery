@@ -142,6 +142,9 @@ fun GalleryApp(viewModel: GalleryViewModel) {
     val isVideoMuted by viewModel.isVideoMuted.collectAsStateWithLifecycle()
 
     val editorState by viewModel.editorState.collectAsStateWithLifecycle()
+    val exportFormat by viewModel.exportFormat.collectAsStateWithLifecycle()
+    val exportQuality by viewModel.exportQuality.collectAsStateWithLifecycle()
+    val stripExif by viewModel.stripExif.collectAsStateWithLifecycle()
     val selectedAlbumName by viewModel.selectedAlbumName.collectAsStateWithLifecycle()
     val feedbackMessage by viewModel.feedbackMessage.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
@@ -339,6 +342,8 @@ fun GalleryApp(viewModel: GalleryViewModel) {
                         onToolChange = { viewModel.setEditorTool(it) },
                         onFilterChange = { viewModel.setEditorFilter(it) },
                         onRotate = { viewModel.rotateEditor90() },
+                        onRotateCcw = { viewModel.rotateEditorCcw() },
+                        onResetAllEditor = { viewModel.resetAllEditor() },
                         onFlipH = { viewModel.flipEditorH() },
                         onFlipV = { viewModel.flipEditorV() },
                         onCropRatioChange = { viewModel.setEditorCropRatio(it) },
@@ -348,6 +353,28 @@ fun GalleryApp(viewModel: GalleryViewModel) {
                         onAdjustmentsChange = { b, c, s, w ->
                             viewModel.updateEditorAdjustment(b, c, s, w)
                         },
+                        onFullAdjustmentsChange = { b, c, s, w, h, sh, wh, bl, t, v, sharp, cl, dn, vig ->
+                            viewModel.updateFullAdjustments(b, c, s, w, h, sh, wh, bl, t, v, sharp, cl, dn, vig)
+                        },
+                        onFilterStrengthChange = { viewModel.setFilterStrength(it) },
+                        onCompareToggle = { viewModel.toggleCompare() },
+                        onAddShape = { shape -> viewModel.addShape(shape) },
+                        onClearShapes = { viewModel.clearShapes() },
+                        onLevelAngleChange = { viewModel.setLevelAngle(it) },
+                        onPerspectiveHChange = { viewModel.setPerspectiveHorizontal(it) },
+                        onPerspectiveVChange = { viewModel.setPerspectiveVertical(it) },
+                        onHslChange = { ch, h, s, l -> viewModel.setHslChannel(ch, h, s, l) },
+                        onBokehChange = { type, strength, cx, cy -> viewModel.setBokeh(type, strength, cx, cy) },
+                        onRetouchTap = { op -> viewModel.addRetouchOp(op) },
+                        onClearRetouch = { viewModel.clearRetouchOps() },
+                        exportFormat = exportFormat,
+                        exportQuality = exportQuality,
+                        stripExif = stripExif,
+                        onSetExportFormat = { viewModel.setExportFormat(it) },
+                        onSetExportQuality = { viewModel.setExportQuality(it) },
+                        onSetStripExif = { viewModel.setStripExif(it) },
+                        needsSpatialPreview = viewModel.editorNeedsSpatialPreview(),
+                        previewRenderer = { maxDim -> viewModel.renderPreviewBitmap(maxDim) },
                         onAddDrawingPath = { path ->
                             viewModel.addDrawingPath(path)
                         },

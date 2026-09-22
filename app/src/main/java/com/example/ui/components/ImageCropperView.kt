@@ -71,14 +71,22 @@ private enum class CropDragHandle {
  * - Strict aspect ratio locking when a preset ratio is selected.
  * - Pan inside box without resizing.
  * - Strict boundary containment inside rendered image.
+ * - Level/Angle straightening (-45° to +45°).
+ * - Perspective/Keystone correction controls.
  */
 @Composable
 fun ImageCropperView(
     imageWidth: Int,
     imageHeight: Int,
     cropRect: NormalizedCropRect,
-    selectedAspectRatio: String, // "Freeform", "1:1", "9:16", "16:9", "4:3", "3:4"
+    selectedAspectRatio: String,
+    levelAngle: Float = 0f,
+    perspectiveHorizontal: Float = 0f,
+    perspectiveVertical: Float = 0f,
     onCropChange: (NormalizedCropRect) -> Unit,
+    onLevelAngleChange: (Float) -> Unit = {},
+    onPerspectiveHChange: (Float) -> Unit = {},
+    onPerspectiveVChange: (Float) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
@@ -98,6 +106,9 @@ fun ImageCropperView(
             "9:16" -> 9f / 16f
             "16:9" -> 16f / 9f
             "4:3" -> 4f / 3f
+            "3:2" -> 3f / 2f
+            "5:4" -> 5f / 4f
+            "4:5" -> 4f / 5f
             "3:4" -> 3f / 4f
             else -> null // "Freeform"
         }
@@ -335,8 +346,77 @@ fun ImageCropperView(
                 strokeWidth = edgeStroke(CropDragHandle.RIGHT),
                 cap = StrokeCap.Round
             )
+            // 6. Level/Angle Indicator (rotated horizon line)
+            if (levelAngle != 0f) {
+                val angleRad = Math.toRadians(levelAngle.toDouble())
+                val cosA = Math.cos(angleRad).toFloat()
+                val sinA = Math.sin(angleRad).toFloat()
+                val cx = boxLeft + boxWidth / 2f
+                val cy = boxTop + boxHeight / 2f
+                val lineLen = boxWidth.coerceAtLeast(boxHeight) * 0.6f
+                val x1 = cx - lineLen * cosA
+                val y1 = cy + lineLen * sinA
+                val x2 = cx + lineLen * cosA
+                val y2 = cy - lineLen * sinA
+                drawLine(
+                    color = Color(0xFFFFE500),
+                    start = Offset(x1, y1),
+                    end = Offset(x2, y2),
+                    strokeWidth = 2.dp.toPx()
+                )
+                // Small angle indicator circle
+                drawCircle(
+                    color = Color(0xFFFFE500),
+                    radius = 6.dp.toPx(),
+                    center = Offset(cx, cy)
+                )
+            }
+
+            // 7. Perspective/Keystone Indicators (small arrows at corners)
+            if (perspectiveHorizontal != 0f || perspectiveVertical != 0f) {
+                val ph = perspectiveHorizontal
+                val pv = perspectiveVertical
+                val arrowLen = 20f
+                // Top-left
+                drawPerspectiveArrow(boxLeft, boxTop, -ph, -pv, arrowLen)
+                // Top-right
+                drawPerspectiveArrow(boxRight, boxTop, ph, -pv, arrowLen)
+                // Bottom-left
+                drawPerspectiveArrow(boxLeft, boxBottom, -ph, pv, arrowLen)
+                // Bottom-right
+                drawPerspectiveArrow(boxRight, boxBottom, ph, pv, arrowLen)
+            }
         }
     }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPerspectiveArrow(
+    x: Float, y: Float, hOff: Float, vOff: Float, len: Float
+) {
+    val dirH = hOff.coerceIn(-1f, 1f)
+    val dirV = vOff.coerceIn(-1f, 1f)
+    val dx = dirH * len
+    val dy = dirV * len
+    drawLine(
+        color = Color(0xFFFFE500).copy(alpha = 0.6f),
+        start = Offset(x, y),
+        end = Offset(x + dx, y + dy),
+        strokeWidth = 2.dp.toPx()
+    )
+    val ax = x + dx
+    val ay = y + dy
+    drawLine(
+        color = Color(0xFFFFE500).copy(alpha = 0.6f),
+        start = Offset(ax, ay),
+        end = Offset(ax - dirV * 6f, ay + dirH * 6f),
+        strokeWidth = 2.dp.toPx()
+    )
+    drawLine(
+        color = Color(0xFFFFE500).copy(alpha = 0.6f),
+        start = Offset(ax, ay),
+        end = Offset(ax + dirV * 6f, ay - dirH * 6f),
+        strokeWidth = 2.dp.toPx()
+    )
 }
 
 /**

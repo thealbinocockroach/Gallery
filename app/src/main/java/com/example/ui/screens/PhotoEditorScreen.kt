@@ -5,7 +5,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,11 +37,15 @@ import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FontDownload
+import androidx.compose.material.icons.filled.Healing
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -62,6 +68,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
@@ -69,6 +76,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -107,8 +115,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import com.example.ui.components.ImageCropperView
 import com.example.ui.components.NormalizedCropRect
 import com.example.viewmodel.DrawingPath
+import com.example.viewmodel.EditorShape
+import com.example.viewmodel.RetouchOp
+import com.example.viewmodel.RetouchType
+import com.example.viewmodel.ShapeType
 import com.example.viewmodel.EditorState
 import com.example.viewmodel.TextOverlay
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 
 @Composable
 fun PhotoEditorScreen(
@@ -121,6 +138,8 @@ fun PhotoEditorScreen(
     onToolChange: (String) -> Unit,
     onFilterChange: (String) -> Unit,
     onRotate: () -> Unit,
+    onRotateCcw: () -> Unit = {},
+    onResetAllEditor: () -> Unit = {},
     onFlipH: () -> Unit,
     onFlipV: () -> Unit,
     onCropRatioChange: (String) -> Unit,
@@ -128,6 +147,26 @@ fun PhotoEditorScreen(
     onApplyCrop: () -> Unit = {},
     onResetCrop: () -> Unit = {},
     onAdjustmentsChange: (Float, Float, Float, Float) -> Unit,
+    onFullAdjustmentsChange: (Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float) -> Unit = { _, _, _, _, _, _, _, _, _, _, _, _, _, _ -> },
+    onFilterStrengthChange: (Float) -> Unit = {},
+    onCompareToggle: () -> Unit = {},
+    onAddShape: (EditorShape) -> Unit = {},
+    onClearShapes: () -> Unit = {},
+    onLevelAngleChange: (Float) -> Unit = {},
+    onPerspectiveHChange: (Float) -> Unit = {},
+    onPerspectiveVChange: (Float) -> Unit = {},
+    onHslChange: (Int, Float, Float, Float) -> Unit = { _, _, _, _ -> },
+    onBokehChange: (String, Float, Float, Float) -> Unit = { _, _, _, _ -> },
+    onRetouchTap: (RetouchOp) -> Unit = {},
+    onClearRetouch: () -> Unit = {},
+    exportFormat: String = "JPEG",
+    exportQuality: Int = 90,
+    stripExif: Boolean = false,
+    onSetExportFormat: (String) -> Unit = {},
+    onSetExportQuality: (Int) -> Unit = {},
+    onSetStripExif: (Boolean) -> Unit = {},
+    needsSpatialPreview: Boolean = false,
+    previewRenderer: (suspend (Int) -> android.graphics.Bitmap?)? = null,
     onAddDrawingPath: (DrawingPath) -> Unit,
     onUndoDrawing: () -> Unit,
     onClearDrawing: () -> Unit,
@@ -150,13 +189,43 @@ fun PhotoEditorScreen(
     }
 
     var showInstallFontDialog by remember { mutableStateOf(false) }
+    var showSaveDialog by remember { mutableStateOf(false) }
     var newFontName by remember { mutableStateOf("") }
     var newFontCategory by remember { mutableStateOf("Custom Installed") }
 
     // Doodle tool state
     var selectedBrushColor by remember { mutableStateOf(NeoYellow) }
     var brushStrokeWidth by remember { mutableFloatStateOf(8f) }
+    var brushAlpha by remember { mutableFloatStateOf(1f) }
     var currentDoodlePoints by remember { mutableStateOf<List<Pair<Float, Float>>>(emptyList()) }
+    // Retouch tap handler is configured by the RETOUCH panel below (mode/radius/strength).
+    var retouchTapHandler by remember { mutableStateOf<((Float, Float) -> Unit)>({ _, _ -> }) }
+
+    // Shape tool state
+    var selectedShapeColor by remember { mutableStateOf(NeoCyan) }
+    var shapeStrokeWidth by remember { mutableFloatStateOf(4f) }
+    var shapeFillAlpha by remember { mutableFloatStateOf(0.3f) }
+    var shapePoints by remember { mutableStateOf<List<Pair<Float, Float>>>(emptyList()) }
+    var currentShapeType by remember { mutableStateOf(ShapeType.RECT) }
+
+    // Compare / Filter Strength
+    var showCompare by remember { mutableStateOf(editorState.showCompare) }
+    // Hold-to-compare: press-and-hold the preview to peek at the original base image.
+    var pressComparing by remember { mutableStateOf(false) }
+    val isComparing = showCompare || pressComparing
+    // Downscaled CPU render for spatial effects (sharp/clarity/denoise/vignette/HSL/
+    // bokeh/retouch/level/perspective) so the preview stays WYSIWYG with export.
+    var spatialBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    androidx.compose.runtime.LaunchedEffect(editorState, needsSpatialPreview, isComparing) {
+        if (!needsSpatialPreview || previewRenderer == null || isComparing) {
+            spatialBitmap = null
+            return@LaunchedEffect
+        }
+        kotlinx.coroutines.delay(150)
+        spatialBitmap = previewRenderer(1080)
+    }
+    val spatialImageBitmap = remember(spatialBitmap) { spatialBitmap?.asImageBitmap() }
+    var filterStrength by remember { mutableFloatStateOf(editorState.filterStrength) }
 
     // Text tool state — now fully draggable anywhere on the image
     var editingTextString by remember { mutableStateOf(editorState.textOverlay?.text ?: "") }
@@ -284,9 +353,15 @@ fun PhotoEditorScreen(
                     shadowOffset = 2.dp,
                     testTag = "editor_btn_redo"
                 )
+                NeoBadge(
+                    text = "RESET ALL",
+                    backgroundColor = NeoPink,
+                    textColor = NeoWhite,
+                    modifier = Modifier.clickable(onClick = onResetAllEditor)
+                )
                 NeoButton(
                     text = "SAVE",
-                    onClick = { onSave(true) },
+                    onClick = { showSaveDialog = true },
                     containerColor = NeoMint,
                     leadingIcon = Icons.Default.Save,
                     testTag = "editor_btn_save"
@@ -309,45 +384,87 @@ fun PhotoEditorScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .onSizeChanged { previewBoxSize = it }
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onPress = {
+                                pressComparing = true
+                                tryAwaitRelease()
+                                pressComparing = false
+                            }
+                        )
+                    }
                     .graphicsLayer(
-                        rotationZ = editorState.rotation,
+                        rotationZ = editorState.rotation + editorState.levelAngle,
                         scaleX = if (editorState.flipH) -1f else 1f,
                         scaleY = if (editorState.flipV) -1f else 1f
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                // Main Photo with Color Filter
-                AsyncImage(
-                    model = editorImageRequest,
-                    contentDescription = media.title,
-                    contentScale = ContentScale.Fit,
-                    colorFilter = FilterHelper.getColorFilter(
-                        editorState.selectedFilter,
-                        editorState.brightness,
-                        editorState.contrast,
-                        editorState.saturation,
-                        editorState.warmth
-                    ),
-                    modifier = Modifier.fillMaxSize()
-                )
+                // Main Photo: base original while comparing, CPU-rendered spatial preview
+                // when available, otherwise GPU ColorMatrix path.
+                if (isComparing) {
+                    AsyncImage(
+                        model = editorImageRequest,
+                        contentDescription = media.title,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else if (spatialImageBitmap != null) {
+                    Image(
+                        bitmap = spatialImageBitmap,
+                        contentDescription = media.title,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    AsyncImage(
+                        model = editorImageRequest,
+                        contentDescription = media.title,
+                        contentScale = ContentScale.Fit,
+                        colorFilter = FilterHelper.getColorFilter(
+                            editorState.selectedFilter,
+                            editorState.brightness,
+                            editorState.contrast,
+                            editorState.saturation,
+                            editorState.warmth,
+                            editorState.tint,
+                            editorState.highlights,
+                            editorState.shadows,
+                            editorState.whites,
+                            editorState.blacks,
+                            editorState.vibrance,
+                            editorState.filterStrength
+                        ),
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
 
-                // Interactive Crop Overlay when CROP tool is active
-                if (editorState.activeTool == "CROP") {
+                // Interactive Crop Overlay when CROP tool is active (hidden while comparing)
+                if (editorState.activeTool == "CROP" && !isComparing) {
                     ImageCropperView(
                         imageWidth = media.width,
                         imageHeight = media.height,
                         cropRect = editorState.cropRectNorm,
                         selectedAspectRatio = editorState.cropRatio,
+                        levelAngle = editorState.levelAngle,
+                        perspectiveHorizontal = editorState.perspectiveHorizontal,
+                        perspectiveVertical = editorState.perspectiveVertical,
                         onCropChange = onCropChange,
+                        onLevelAngleChange = onLevelAngleChange,
+                        onPerspectiveHChange = onPerspectiveHChange,
+                        onPerspectiveVChange = onPerspectiveVChange,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
 
-                // Doodles Canvas
+                // Doodles + Shapes Canvas (hidden while comparing with the original)
                 Canvas(
                     modifier = Modifier
                         .fillMaxSize()
-                        .pointerInput(editorState.activeTool, selectedBrushColor, brushStrokeWidth) {
+                        .pointerInput(
+                            editorState.activeTool, selectedBrushColor, brushStrokeWidth,
+                            brushAlpha, currentShapeType, retouchTapHandler
+                        ) {
                             if (editorState.activeTool == "DOODLE") {
                                 detectDragGestures(
                                     onDragStart = { offset ->
@@ -362,17 +479,43 @@ fun PhotoEditorScreen(
                                             onAddDrawingPath(
                                                 DrawingPath(
                                                     points = currentDoodlePoints,
-                                                    color = selectedBrushColor.value.toLong(),
-                                                    strokeWidth = brushStrokeWidth
+                                                    color = selectedBrushColor.copy(alpha = brushAlpha).value.toLong(),
+                                                    strokeWidth = brushStrokeWidth,
+                                                    anchorW = previewBoxSize.width,
+                                                    anchorH = previewBoxSize.height
                                                 )
                                             )
                                         }
                                         currentDoodlePoints = emptyList()
                                     }
                                 )
+                            } else if (editorState.activeTool == "SHAPES") {
+                                // Drag defines the shape bounds; DRAW SHAPE commits it.
+                                detectDragGestures(
+                                    onDragStart = { offset ->
+                                        shapePoints = listOf(offset.x to offset.y)
+                                    },
+                                    onDrag = { change, _ ->
+                                        change.consume()
+                                        val start = shapePoints.firstOrNull()
+                                            ?: (change.position.x to change.position.y)
+                                        shapePoints = listOf(start, change.position.x to change.position.y)
+                                    }
+                                )
+                            } else if (editorState.activeTool == "RETOUCH") {
+                                detectTapGestures(
+                                    onTap = { offset ->
+                                        val w = size.width.toFloat()
+                                        val h = size.height.toFloat()
+                                        if (w > 0 && h > 0) {
+                                            retouchTapHandler(offset.x / w, offset.y / h)
+                                        }
+                                    }
+                                )
                             }
                         }
                 ) {
+                    if (isComparing) return@Canvas
                     // Draw committed paths
                     editorState.drawingPaths.forEach { dp ->
                         if (dp.points.size > 1) {
@@ -394,6 +537,83 @@ fun PhotoEditorScreen(
                         }
                     }
 
+                    // Draw committed shapes (vector overlays in preview-box pixels)
+                    editorState.shapes.forEach { shape ->
+                        if (shape.points.size < 2) return@forEach
+                        val a = shape.points.first()
+                        val b = shape.points.last()
+                        val left = minOf(a.first, b.first)
+                        val top = minOf(a.second, b.second)
+                        val right = maxOf(a.first, b.first)
+                        val bottom = maxOf(a.second, b.second)
+                        val base = Color(shape.color.toULong())
+                        val stroke = Stroke(
+                            width = shape.strokeWidth,
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round
+                        )
+                        when (shape.type) {
+                            ShapeType.RECT -> {
+                                if (shape.fillAlpha > 0f) {
+                                    drawRect(
+                                        color = base.copy(alpha = shape.fillAlpha),
+                                        topLeft = Offset(left, top),
+                                        size = Size(right - left, bottom - top)
+                                    )
+                                }
+                                drawRect(
+                                    color = base,
+                                    topLeft = Offset(left, top),
+                                    size = Size(right - left, bottom - top),
+                                    style = stroke
+                                )
+                            }
+                            ShapeType.CIRCLE -> {
+                                val cx = (left + right) / 2f
+                                val cy = (top + bottom) / 2f
+                                val rad = minOf(right - left, bottom - top) / 2f
+                                if (shape.fillAlpha > 0f) {
+                                    drawCircle(color = base.copy(alpha = shape.fillAlpha), radius = rad, center = Offset(cx, cy))
+                                }
+                                drawCircle(color = base, radius = rad, center = Offset(cx, cy), style = stroke)
+                            }
+                            ShapeType.HIGHLIGHT -> {
+                                drawRect(
+                                    color = base.copy(alpha = (0.35f + shape.fillAlpha * 0.4f).coerceIn(0f, 0.75f)),
+                                    topLeft = Offset(left, top),
+                                    size = Size(right - left, bottom - top)
+                                )
+                            }
+                            ShapeType.ARROW -> {
+                                drawLine(start = Offset(a.first, a.second), end = Offset(b.first, b.second), color = base, strokeWidth = shape.strokeWidth, cap = StrokeCap.Round)
+                                val angle = atan2(b.second - a.second, b.first - a.first)
+                                val headLen = 24f
+                                val headAng = 0.5f
+                                listOf(angle + PI.toFloat() - headAng, angle + PI.toFloat() + headAng).forEach { ha ->
+                                    drawLine(
+                                        start = Offset(b.first, b.second),
+                                        end = Offset(b.first + cos(ha) * headLen, b.second + sin(ha) * headLen),
+                                        color = base,
+                                        strokeWidth = shape.strokeWidth,
+                                        cap = StrokeCap.Round
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // In-progress shape drag preview
+                    if (editorState.activeTool == "SHAPES" && shapePoints.size >= 2) {
+                        val a = shapePoints.first()
+                        val b = shapePoints.last()
+                        drawRect(
+                            color = selectedShapeColor.copy(alpha = 0.5f),
+                            topLeft = Offset(minOf(a.first, b.first), minOf(a.second, b.second)),
+                            size = Size(abs(b.first - a.first), abs(b.second - a.second)),
+                            style = Stroke(width = 3f)
+                        )
+                    }
+
                     // Draw currently dragging path
                     if (currentDoodlePoints.size > 1) {
                         val activePath = Path().apply {
@@ -404,7 +624,7 @@ fun PhotoEditorScreen(
                         }
                         drawPath(
                             path = activePath,
-                            color = selectedBrushColor,
+                            color = selectedBrushColor.copy(alpha = brushAlpha),
                             style = Stroke(
                                 width = brushStrokeWidth,
                                 cap = StrokeCap.Round,
@@ -415,7 +635,8 @@ fun PhotoEditorScreen(
                 }
 
                 // Text Overlay Preview — fully draggable anywhere on the image
-                if (editingTextString.isNotBlank()) {
+                // (hidden while comparing with the original)
+                if (editingTextString.isNotBlank() && !isComparing) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize(),
@@ -513,12 +734,13 @@ fun PhotoEditorScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(if (editorState.activeTool == "TEXT") 208.dp else 115.dp)
+                        .height(if (editorState.activeTool in listOf("TEXT", "SHAPES", "DETAIL", "RETOUCH", "CROP")) 208.dp else 115.dp)
                         .padding(horizontal = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     when (editorState.activeTool) {
                         "FILTERS" -> {
+                            Column(modifier = Modifier.fillMaxWidth()) {
                             LazyRow(
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                                 contentPadding = PaddingValues(horizontal = 4.dp)
@@ -545,146 +767,340 @@ fun PhotoEditorScreen(
                                     }
                                 }
                             }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            // Filter Strength 0..100%
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("STRENGTH", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Slider(
+                                    value = filterStrength,
+                                    onValueChange = { filterStrength = it; onFilterStrengthChange(it) },
+                                    valueRange = 0f..1f,
+                                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                    colors = SliderDefaults.colors(thumbColor = NeoYellow, activeTrackColor = NeoDark)
+                                )
+                                Text("${(filterStrength * 100).toInt()}%", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
+                            }
+                            }
                         }
 
                         "CROP" -> {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 2.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                // Preset Aspect Ratios Toolbar
-                                LazyRow(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    contentPadding = PaddingValues(horizontal = 2.dp)
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .verticalScroll(rememberScrollState())
+                                        .padding(vertical = 2.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    val ratios = listOf("Freeform", "1:1", "9:16", "16:9", "4:3", "3:4")
-                                    items(ratios) { ratio ->
-                                        val isSelected = editorState.cropRatio == ratio
-                                        Box(
-                                            modifier = Modifier
-                                                .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
-                                                .border(
-                                                    width = if (isSelected) 2.dp else 1.5.dp,
-                                                    color = if (isSelected) NeoDark else NeoBorder,
-                                                    shape = RectangleShape
+                                    // Preset Aspect Ratios Toolbar
+                                    LazyRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        contentPadding = PaddingValues(horizontal = 2.dp)
+                                    ) {
+                                        val ratios = listOf("Freeform", "1:1", "9:16", "16:9", "4:3", "3:2", "5:4", "4:5", "3:4")
+                                        items(ratios) { ratio ->
+                                            val isSelected = editorState.cropRatio == ratio
+                                            Box(
+                                                modifier = Modifier
+                                                    .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
+                                                    .border(
+                                                        width = if (isSelected) 2.dp else 1.5.dp,
+                                                        color = if (isSelected) NeoDark else NeoBorder,
+                                                        shape = RectangleShape
+                                                    )
+                                                    .clickable { onCropRatioChange(ratio) }
+                                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                                            ) {
+                                                Text(
+                                                    text = ratio.uppercase(),
+                                                    fontWeight = FontWeight.Black,
+                                                    fontSize = 11.sp,
+                                                    color = NeoDark
                                                 )
-                                                .clickable { onCropRatioChange(ratio) }
-                                                .padding(horizontal = 10.dp, vertical = 6.dp)
-                                        ) {
-                                            Text(
-                                                text = ratio.uppercase(),
-                                                fontWeight = FontWeight.Black,
-                                                fontSize = 11.sp,
-                                                color = NeoDark
-                                            )
+                                            }
                                         }
                                     }
-                                }
 
-                                // Secondary Actions: Rotate, Flip, Reset & Apply Crop
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                                    // Level/Angle straightening slider
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("LEVEL", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                        Slider(
+                                            value = editorState.levelAngle,
+                                            onValueChange = onLevelAngleChange,
+                                            valueRange = -45f..45f,
+                                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                            colors = SliderDefaults.colors(thumbColor = NeoYellow, activeTrackColor = NeoDark)
+                                        )
+                                        Text("${editorState.levelAngle.toInt()}°", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
+                                    }
+
+                                    // Keystone correction sliders (baked on export)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("PERSP-H", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                        Slider(
+                                            value = editorState.perspectiveHorizontal,
+                                            onValueChange = onPerspectiveHChange,
+                                            valueRange = -45f..45f,
+                                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                            colors = SliderDefaults.colors(thumbColor = NeoYellow, activeTrackColor = NeoDark)
+                                        )
+                                        Text("${editorState.perspectiveHorizontal.toInt()}°", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("PERSP-V", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                        Slider(
+                                            value = editorState.perspectiveVertical,
+                                            onValueChange = onPerspectiveVChange,
+                                            valueRange = -45f..45f,
+                                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                            colors = SliderDefaults.colors(thumbColor = NeoYellow, activeTrackColor = NeoDark)
+                                        )
+                                        Text("${editorState.perspectiveVertical.toInt()}°", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
+                                    }
+
+                                    // Secondary Actions: Rotate, Flip, Reset & Apply Crop
                                     Row(
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
                                         NeoIconButton(
                                             icon = Icons.Default.RotateRight,
-                                            contentDescription = "Rotate 90°",
+                                            contentDescription = "Rotate 90° clockwise",
                                             onClick = onRotate,
                                             backgroundColor = NeoWhite,
                                             size = 36.dp
                                         )
                                         NeoIconButton(
-                                            icon = Icons.Default.Flip,
-                                            contentDescription = "Flip Horizontal",
-                                            onClick = onFlipH,
+                                            icon = Icons.Default.RotateLeft,
+                                            contentDescription = "Rotate 90° counter-clockwise",
+                                            onClick = onRotateCcw,
                                             backgroundColor = NeoWhite,
                                             size = 36.dp
                                         )
-                                        NeoIconButton(
-                                            icon = Icons.Default.RestartAlt,
-                                            contentDescription = "Reset Crop",
-                                            onClick = onResetCrop,
-                                            backgroundColor = NeoWhite,
-                                            size = 36.dp
-                                        )
-                                    }
-
-                                    NeoButton(
-                                        text = "APPLY CROP",
-                                        onClick = onApplyCrop,
-                                        containerColor = NeoMint,
-                                        leadingIcon = Icons.Default.Check,
-                                        testTag = "editor_btn_apply_crop"
-                                    )
-                                }
-                            }
-                        }
-
-                        "ADJUST" -> {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .verticalScroll(rememberScrollState())
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "ADJUST COLOR",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Black
-                                    )
-                                    NeoBadge(
-                                        text = "RESET",
-                                        backgroundColor = NeoPink,
-                                        textColor = NeoWhite,
-                                        modifier = Modifier.clickable {
-                                            onAdjustmentsChange(0f, 0f, 0f, 0f)
+                                            NeoIconButton(
+                                                icon = Icons.Default.Flip,
+                                                contentDescription = "Flip Horizontal",
+                                                onClick = onFlipH,
+                                                backgroundColor = NeoWhite,
+                                                size = 36.dp
+                                            )
+                                            NeoIconButton(
+                                                icon = Icons.Default.RestartAlt,
+                                                contentDescription = "Reset Crop",
+                                                onClick = onResetCrop,
+                                                backgroundColor = NeoWhite,
+                                                size = 36.dp
+                                            )
                                         }
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(2.dp))
 
-                                AdjustSliderRow(
-                                    label = "BRIGHTNESS ${editorState.brightness.toInt()}",
-                                    value = editorState.brightness,
-                                    onValueChange = {
-                                        onAdjustmentsChange(it, editorState.contrast, editorState.saturation, editorState.warmth)
+                                        NeoButton(
+                                            text = "APPLY CROP",
+                                            onClick = onApplyCrop,
+                                            containerColor = NeoMint,
+                                            leadingIcon = Icons.Default.Check,
+                                            testTag = "editor_btn_apply_crop"
+                                        )
                                     }
-                                )
-                                AdjustSliderRow(
-                                    label = "CONTRAST ${editorState.contrast.toInt()}",
-                                    value = editorState.contrast,
-                                    onValueChange = {
-                                        onAdjustmentsChange(editorState.brightness, it, editorState.saturation, editorState.warmth)
-                                    }
-                                )
-                                AdjustSliderRow(
-                                    label = "SATURATION ${editorState.saturation.toInt()}",
-                                    value = editorState.saturation,
-                                    onValueChange = {
-                                        onAdjustmentsChange(editorState.brightness, editorState.contrast, it, editorState.warmth)
-                                    }
-                                )
-                                AdjustSliderRow(
-                                    label = "WARMTH ${editorState.warmth.toInt()}",
-                                    value = editorState.warmth,
-                                    onValueChange = {
-                                        onAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, it)
-                                    }
-                                )
+                                }
                             }
-                        }
+
+"ADJUST" -> {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .verticalScroll(rememberScrollState())
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "EXPOSURE & COLOR",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        NeoBadge(
+                                            text = "RESET",
+                                            backgroundColor = NeoPink,
+                                            textColor = NeoWhite,
+                                            modifier = Modifier.clickable {
+                                                onFullAdjustmentsChange(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+                                            }
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+
+                                    // Exposure
+                                    AdjustSliderRow(
+                                        label = "BRIGHTNESS ${editorState.brightness.toInt()}",
+                                        value = editorState.brightness,
+                                        onValueChange = { onFullAdjustmentsChange(it, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                    )
+                                    AdjustSliderRow(
+                                        label = "CONTRAST ${editorState.contrast.toInt()}",
+                                        value = editorState.contrast,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, it, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                    )
+                                    AdjustSliderRow(
+                                        label = "HIGHLIGHTS ${editorState.highlights.toInt()}",
+                                        value = editorState.highlights,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, it, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                    )
+                                    AdjustSliderRow(
+                                        label = "SHADOWS ${editorState.shadows.toInt()}",
+                                        value = editorState.shadows,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, it, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                    )
+                                    AdjustSliderRow(
+                                        label = "WHITES ${editorState.whites.toInt()}",
+                                        value = editorState.whites,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, it, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                    )
+                                    AdjustSliderRow(
+                                        label = "BLACKS ${editorState.blacks.toInt()}",
+                                        value = editorState.blacks,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, it, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                    )
+
+                                    // Color
+                                    AdjustSliderRow(
+                                        label = "SATURATION ${editorState.saturation.toInt()}",
+                                        value = editorState.saturation,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, it, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                    )
+                                    AdjustSliderRow(
+                                        label = "VIBRANCE ${editorState.vibrance.toInt()}",
+                                        value = editorState.vibrance,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, it, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                    )
+                                    AdjustSliderRow(
+                                        label = "WARMTH ${editorState.warmth.toInt()}",
+                                        value = editorState.warmth,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, it, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                    )
+                                    AdjustSliderRow(
+                                        label = "TINT ${editorState.tint.toInt()}",
+                                        value = editorState.tint,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, it, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                    )
+
+                                    // HSL Color Mixer: per-channel hue/sat/lum for 8 channels
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text("HSL MIXER", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    var hslChannel by remember { mutableStateOf(0) }
+                                    val hslNames = listOf("RED", "ORANGE", "YELLOW", "GREEN", "CYAN", "BLUE", "PURPLE", "MAGENTA")
+                                    LazyRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        contentPadding = PaddingValues(horizontal = 2.dp)
+                                    ) {
+                                        items(8) { ch ->
+                                            val isSelected = hslChannel == ch
+                                            Box(
+                                                modifier = Modifier
+                                                    .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
+                                                    .border(1.5.dp, NeoBorder, RectangleShape)
+                                                    .clickable { hslChannel = ch }
+                                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                            ) {
+                                                Text(hslNames[ch], fontSize = 10.sp, fontWeight = FontWeight.Black, color = NeoDark)
+                                            }
+                                        }
+                                    }
+                                    val hslBase = hslChannel * 3
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("HUE", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                        Slider(
+                                            value = editorState.hsl[hslBase],
+                                            onValueChange = { onHslChange(hslChannel, it, editorState.hsl[hslBase + 1], editorState.hsl[hslBase + 2]) },
+                                            valueRange = -180f..180f,
+                                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                            colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                        )
+                                        Text("${editorState.hsl[hslBase].toInt()}°", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(44.dp))
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("SAT", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                        Slider(
+                                            value = editorState.hsl[hslBase + 1],
+                                            onValueChange = { onHslChange(hslChannel, editorState.hsl[hslBase], it, editorState.hsl[hslBase + 2]) },
+                                            valueRange = -100f..100f,
+                                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                            colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                        )
+                                        Text("${editorState.hsl[hslBase + 1].toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(44.dp))
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("LUM", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                        Slider(
+                                            value = editorState.hsl[hslBase + 2],
+                                            onValueChange = { onHslChange(hslChannel, editorState.hsl[hslBase], editorState.hsl[hslBase + 1], it) },
+                                            valueRange = -100f..100f,
+                                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                            colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                        )
+                                        Text("${editorState.hsl[hslBase + 2].toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(44.dp))
+                                    }
+
+                                    // Detail
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text("DETAIL", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    AdjustSliderRow(
+                                        label = "SHARPNESS ${editorState.sharpness.toInt()}",
+                                        value = editorState.sharpness,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, it, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                    )
+                                    AdjustSliderRow(
+                                        label = "CLARITY ${editorState.clarity.toInt()}",
+                                        value = editorState.clarity,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, it, editorState.denoise, editorState.vignette) }
+                                    )
+                                    AdjustSliderRow(
+                                        label = "DENOISE ${editorState.denoise.toInt()}",
+                                        value = editorState.denoise,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, it, editorState.vignette) }
+                                    )
+                                    AdjustSliderRow(
+                                        label = "VIGNETTE ${editorState.vignette.toInt()}",
+                                        value = editorState.vignette,
+                                        onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, it) }
+                                    )
+
+                                    // Filter Strength
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("FILTER INTENSITY", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        Slider(
+                                            value = filterStrength,
+                                            onValueChange = { filterStrength = it; onFilterStrengthChange(it) },
+                                            valueRange = 0f..1f,
+                                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                            colors = SliderDefaults.colors(thumbColor = NeoYellow, activeTrackColor = NeoDark)
+                                        )
+                                        Text("${(filterStrength * 100).toInt()}%", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
+                                    }
+
+                                    // Hold to Compare toggle
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("HOLD TO COMPARE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        Switch(
+                                            checked = showCompare,
+                                            onCheckedChange = { showCompare = it; onCompareToggle() },
+                                            colors = SwitchDefaults.colors(
+                                                checkedThumbColor = NeoDark,
+                                                checkedTrackColor = NeoYellow,
+                                                uncheckedThumbColor = NeoDark,
+                                                uncheckedTrackColor = NeoBorder
+                                            )
+                                        )
+                                    }
+                                }
+                            }
 
                         "DOODLE" -> {
                             Column(modifier = Modifier.fillMaxWidth()) {
@@ -739,6 +1155,207 @@ fun PhotoEditorScreen(
                                         valueRange = 3f..24f,
                                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                                         colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(4.dp))
+
+                                // Brush opacity
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("OPACITY", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                    Slider(
+                                        value = brushAlpha,
+                                        onValueChange = { brushAlpha = it },
+                                        valueRange = 0.1f..1f,
+                                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                    )
+                                    Text("${(brushAlpha * 100).toInt()}%", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
+                                }
+
+                                Spacer(modifier = Modifier.height(4.dp))
+
+                                // Brush custom color: hue slider + hex input with live swatch
+                                var brushHue by remember { mutableFloatStateOf(55f) }
+                                var brushHex by remember { mutableStateOf("") }
+                                var brushHexError by remember { mutableStateOf(false) }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .background(selectedBrushColor, RectangleShape)
+                                            .border(1.5.dp, NeoBorder, RectangleShape)
+                                    )
+                                    Slider(
+                                        value = brushHue,
+                                        onValueChange = {
+                                            brushHue = it
+                                            selectedBrushColor = hsvToPickerColor(it)
+                                            brushHex = ""
+                                            brushHexError = false
+                                        },
+                                        valueRange = 0f..360f,
+                                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                    )
+                                    OutlinedTextField(
+                                        value = brushHex,
+                                        onValueChange = { raw ->
+                                            brushHex = raw
+                                            val parsed = hexToPickerColorOrNull(raw)
+                                            if (parsed != null) {
+                                                selectedBrushColor = parsed
+                                                brushHue = pickerColorToHue(parsed)
+                                                brushHexError = false
+                                            } else {
+                                                brushHexError = raw.isNotBlank()
+                                            }
+                                        },
+                                        placeholder = { Text("#HEX", fontSize = 10.sp) },
+                                        singleLine = true,
+                                        isError = brushHexError,
+                                        modifier = Modifier.width(96.dp).height(48.dp),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = NeoDark,
+                                            unfocusedBorderColor = NeoBorder,
+                                            focusedContainerColor = NeoBg,
+                                            unfocusedContainerColor = NeoBg,
+                                            errorBorderColor = NeoRed
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        "RETOUCH" -> {
+                            var retouchMode by remember { mutableStateOf("HEAL") }
+                            var retouchRadius by remember { mutableFloatStateOf(36f) }
+                            var retouchStrength by remember { mutableFloatStateOf(0.8f) }
+                            var bokehShape by remember { mutableStateOf("RADIAL") }
+                            // Wire taps from current panel state every composition.
+                            retouchTapHandler = { xNorm, yNorm ->
+                                val bw = previewBoxSize.width
+                                val bh = previewBoxSize.height
+                                if (bw > 0 && bh > 0) {
+                                    if (retouchMode == "BOKEH") {
+                                        onBokehChange(bokehShape, retouchStrength, xNorm, yNorm)
+                                    } else {
+                                        onRetouchTap(
+                                            RetouchOp(
+                                                type = if (retouchMode == "REDEYE") RetouchType.REDEYE else RetouchType.HEAL,
+                                                xNorm = xNorm,
+                                                yNorm = yNorm,
+                                                radiusNorm = (retouchRadius / bw).coerceIn(0.01f, 0.5f),
+                                                strength = retouchStrength,
+                                                anchorW = bw,
+                                                anchorH = bh
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                Text(
+                                    text = "TAP PHOTO TO APPLY" + if (retouchMode == "BOKEH") " FOCUS" else "",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Black
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    listOf("HEAL", "REDEYE", "BOKEH").forEach { option ->
+                                        val isSelected = retouchMode == option
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
+                                                .border(1.5.dp, NeoBorder, RectangleShape)
+                                                .clickable { retouchMode = option }
+                                                .padding(vertical = 5.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(option, fontSize = 10.sp, fontWeight = FontWeight.Black, color = NeoDark)
+                                        }
+                                    }
+                                }
+                                if (retouchMode == "BOKEH") {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        listOf("RADIAL", "LINEAR").forEach { option ->
+                                            val isSelected = bokehShape == option
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .background(if (isSelected) NeoCyan else NeoBg, RectangleShape)
+                                                    .border(1.5.dp, NeoBorder, RectangleShape)
+                                                    .clickable { bokehShape = option }
+                                                    .padding(vertical = 5.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(option, fontSize = 10.sp, fontWeight = FontWeight.Black, color = NeoDark)
+                                            }
+                                        }
+                                    }
+                                    if (editorState.bokehType != "OFF") {
+                                        Text(
+                                            text = "FOCUS LOCKED — TAP TO MOVE",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = NeoDark.copy(alpha = 0.7f)
+                                        )
+                                    }
+                                } else {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("RADIUS", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                        Slider(
+                                            value = retouchRadius,
+                                            onValueChange = { retouchRadius = it },
+                                            valueRange = 12f..120f,
+                                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                            colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                        )
+                                        Text("${retouchRadius.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(32.dp))
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("STRENGTH", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                    Slider(
+                                        value = retouchStrength,
+                                        onValueChange = { retouchStrength = it },
+                                        valueRange = 0f..1f,
+                                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                    )
+                                    Text("${(retouchStrength * 100).toInt()}%", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                NeoButton(
+                                    text = "CLEAR RETOUCH",
+                                    onClick = {
+                                        onClearRetouch()
+                                        onBokehChange("OFF", 0f, 0.5f, 0.5f)
+                                    },
+                                    containerColor = NeoPink,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                if (editorState.retouchOps.isNotEmpty() || editorState.bokehType != "OFF") {
+                                    Text(
+                                        text = "${editorState.retouchOps.size} SPOTS" +
+                                            if (editorState.bokehType != "OFF") " + BOKEH ${editorState.bokehType}" else "",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = NeoDark.copy(alpha = 0.7f)
                                     )
                                 }
                             }
@@ -970,6 +1587,150 @@ fun PhotoEditorScreen(
                                 }
                             }
                         }
+// SHAPES panel (branch of the tool when above)
+                        "SHAPES" -> {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("SHAPE TOOL", fontSize = 12.sp, fontWeight = FontWeight.Black)
+                                    NeoBadge(
+                                        text = "CLEAR",
+                                        backgroundColor = NeoPink,
+                                        textColor = NeoWhite,
+                                        modifier = Modifier.clickable { onClearShapes() }
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                // Shape type selector
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("TYPE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    listOf("RECT", "CIRCLE", "ARROW", "HIGHLIGHT").forEach { type ->
+                                        val isSelected = currentShapeType == ShapeType.valueOf(type)
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
+                                                .border(1.5.dp, NeoBorder, RectangleShape)
+                                                .clickable { currentShapeType = ShapeType.valueOf(type) }
+                                                .padding(vertical = 5.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(type, fontSize = 10.sp, fontWeight = FontWeight.Black, color = NeoDark)
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                // Color + Size
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("COLOR", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    listOf(NeoYellow, NeoMint, NeoCyan, NeoPink, NeoOrange, NeoRed, NeoDark, NeoWhite).forEach { color ->
+                                        Box(
+                                            modifier = Modifier
+                                                .size(24.dp)
+                                                .background(color, RectangleShape)
+                                                .border(
+                                                    width = if (selectedShapeColor == color) 3.dp else 1.5.dp,
+                                                    color = if (selectedShapeColor == color) NeoDark else NeoBorder,
+                                                    shape = RectangleShape
+                                                )
+                                                .clickable { selectedShapeColor = color }
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("SIZE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    Slider(
+                                        value = shapeStrokeWidth,
+                                        onValueChange = { shapeStrokeWidth = it },
+                                        valueRange = 2f..12f,
+                                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                    )
+                                    Text("${shapeStrokeWidth.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                NeoButton(
+                                    text = "DRAW SHAPE",
+                                    onClick = {
+                                        if (shapePoints.size >= 2) {
+                                            onAddShape(
+                                                EditorShape(
+                                                    type = currentShapeType,
+                                                    points = shapePoints,
+                                                    color = selectedShapeColor.value.toLong(),
+                                                    strokeWidth = shapeStrokeWidth,
+                                                    fillAlpha = shapeFillAlpha,
+                                                    anchorW = previewBoxSize.width,
+                                                    anchorH = previewBoxSize.height
+                                                )
+                                            )
+                                            shapePoints = emptyList()
+                                        } else {
+                                            onClearShapes()
+                                        }
+                                    },
+                                    containerColor = NeoCyan,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+
+// DETAIL panel
+                        "DETAIL" -> {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("DETAIL ENHANCE", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    NeoBadge(
+                                        text = "RESET",
+                                        backgroundColor = NeoPink,
+                                        textColor = NeoWhite,
+                                        modifier = Modifier.clickable {
+                                            onFullAdjustmentsChange(
+                                                editorState.brightness, editorState.contrast,
+                                                editorState.saturation, editorState.warmth,
+                                                editorState.highlights, editorState.shadows,
+                                                editorState.whites, editorState.blacks,
+                                                editorState.tint, editorState.vibrance,
+                                                0f, 0f, 0f, 0f
+                                            )
+                                        }
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                AdjustSliderRow(
+                                    label = "SHARPNESS ${editorState.sharpness.toInt()}",
+                                    value = editorState.sharpness,
+                                    onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, it, editorState.clarity, editorState.denoise, editorState.vignette) }
+                                )
+                                AdjustSliderRow(
+                                    label = "CLARITY ${editorState.clarity.toInt()}",
+                                    value = editorState.clarity,
+                                    onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, it, editorState.denoise, editorState.vignette) }
+                                )
+                                AdjustSliderRow(
+                                    label = "DENOISE ${editorState.denoise.toInt()}",
+                                    value = editorState.denoise,
+                                    onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, it, editorState.vignette) }
+                                )
+                                AdjustSliderRow(
+                                    label = "VIGNETTE ${editorState.vignette.toInt()}",
+                                    value = editorState.vignette,
+                                    onValueChange = { onFullAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, editorState.warmth, editorState.highlights, editorState.shadows, editorState.whites, editorState.blacks, editorState.tint, editorState.vibrance, editorState.sharpness, editorState.clarity, editorState.denoise, it) }
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -979,56 +1740,163 @@ fun PhotoEditorScreen(
                         .height(2.dp)
                         .background(NeoBorder)
                 )
-
-                // Bottom Primary Tool Selector Tabs
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                 Row(
+                     modifier = Modifier
+                         .fillMaxWidth()
+                         .padding(top = 8.dp, bottom = 4.dp),
+                     horizontalArrangement = Arrangement.SpaceEvenly,
+                     verticalAlignment = Alignment.CenterVertically
+                 ) {
                     val tools = listOf(
                         "FILTERS" to Icons.Default.Tune,
                         "CROP" to Icons.Default.Crop,
                         "ADJUST" to Icons.Default.RestartAlt,
                         "DOODLE" to Icons.Default.Brush,
-                        "TEXT" to Icons.Default.FontDownload
+                        "TEXT" to Icons.Default.FontDownload,
+                        "SHAPES" to Icons.Default.CropSquare,
+                        "RETOUCH" to Icons.Default.Healing,
+                        "DETAIL" to Icons.Default.TouchApp
                     )
 
-                    tools.forEach { (toolName, icon) ->
-                        val isSelected = editorState.activeTool == toolName
-                        Column(
-                            modifier = Modifier
-                                .clickable { onToolChange(toolName) }
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
-                                    .border(1.5.dp, NeoBorder, RectangleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = icon,
-                                    contentDescription = toolName,
-                                    tint = NeoDark,
-                                    modifier = Modifier.size(20.dp)
+                     tools.forEach { (toolName, icon) ->
+                         val isSelected = editorState.activeTool == toolName
+                         Column(
+                             modifier = Modifier
+                                 .clickable { onToolChange(toolName) }
+                                 .padding(horizontal = 8.dp, vertical = 4.dp),
+                             horizontalAlignment = Alignment.CenterHorizontally
+                         ) {
+                             Box(
+                                 modifier = Modifier
+                                     .size(36.dp)
+                                     .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
+                                     .border(1.5.dp, NeoBorder, RectangleShape),
+                                 contentAlignment = Alignment.Center
+                             ) {
+                                 Icon(
+                                     imageVector = icon,
+                                     contentDescription = toolName,
+                                     tint = NeoDark,
+                                     modifier = Modifier.size(20.dp)
+                                 )
+                             }
+                             Spacer(modifier = Modifier.height(2.dp))
+                             Text(
+                                 text = toolName,
+                                 fontSize = 9.sp,
+                                 fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
+                                 color = NeoDark
+                             )
+                         }
+                     }
+                 }
+            }
+        }
+
+        // Save / Export dialog: copy vs overwrite, format, quality, EXIF privacy
+        if (showSaveDialog) {
+            AlertDialog(
+                onDismissRequest = { showSaveDialog = false },
+                title = {
+                    Text(
+                        text = "SAVE / EXPORT",
+                        fontWeight = FontWeight.Black,
+                        fontSize = 18.sp,
+                        color = NeoDark
+                    )
+                },
+                text = {
+                    Column {
+                        Text("FORMAT", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("JPEG", "PNG", "WEBP").forEach { fmt ->
+                                val isSelected = exportFormat == fmt
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
+                                        .border(1.5.dp, NeoBorder, RectangleShape)
+                                        .clickable { onSetExportFormat(fmt) }
+                                        .padding(vertical = 6.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(fmt, fontSize = 11.sp, fontWeight = FontWeight.Black, color = NeoDark)
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("QUALITY", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(80, 90, 100).forEach { q ->
+                                val isSelected = exportQuality == q
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
+                                        .border(1.5.dp, NeoBorder, RectangleShape)
+                                        .clickable { onSetExportQuality(q) }
+                                        .padding(vertical = 6.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("$q%", fontSize = 11.sp, fontWeight = FontWeight.Black, color = NeoDark)
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("REMOVE EXIF & GPS", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                Text(
+                                    text = "Strip location + camera metadata",
+                                    fontSize = 10.sp,
+                                    color = NeoDark.copy(alpha = 0.7f)
                                 )
                             }
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = toolName,
-                                fontSize = 10.sp,
-                                fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
-                                color = NeoDark
+                            Switch(
+                                checked = stripExif,
+                                onCheckedChange = onSetStripExif,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = NeoDark,
+                                    checkedTrackColor = NeoYellow,
+                                    uncheckedThumbColor = NeoDark,
+                                    uncheckedTrackColor = NeoBorder
+                                )
                             )
                         }
                     }
-                }
-            }
+                },
+                confirmButton = {
+                    NeoButton(
+                        text = "SAVE COPY",
+                        onClick = {
+                            showSaveDialog = false
+                            onSave(true)
+                        },
+                        containerColor = NeoMint
+                    )
+                },
+                dismissButton = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        NeoButton(
+                            text = "OVERWRITE",
+                            onClick = {
+                                showSaveDialog = false
+                                onSave(false)
+                            },
+                            containerColor = NeoYellow
+                        )
+                        NeoButton(
+                            text = "CANCEL",
+                            onClick = { showSaveDialog = false },
+                            containerColor = NeoWhite
+                        )
+                    }
+                },
+                containerColor = NeoBg,
+                shape = RectangleShape
+            )
         }
 
         // Install Font Modal Dialog
