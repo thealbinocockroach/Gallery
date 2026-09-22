@@ -19,12 +19,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -40,19 +40,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.example.data.Album
 import com.example.data.MediaItem
-import com.example.ui.components.NeoBadge
 import com.example.ui.components.NeoButton
 import com.example.ui.components.NeoCard
+import com.example.ui.components.pinchGridZoom
 import com.example.ui.theme.NeoBg
 import com.example.ui.theme.NeoBorder
 import com.example.ui.theme.NeoCyan
@@ -66,24 +62,13 @@ import com.example.ui.theme.NeoYellow
 fun AlbumsScreen(
     albums: List<Album>,
     mediaList: List<MediaItem>,
+    gridColumns: Int,
+    onColumnsChange: (Int) -> Unit,
     onAlbumClick: (String) -> Unit,
     onCreateAlbum: (String) -> Unit
 ) {
     var showCreateDialog by remember { mutableStateOf(false) }
     var newAlbumName by remember { mutableStateOf("") }
-
-    // Count items per album
-    val albumCounts = remember(mediaList) {
-        mediaList.groupBy { it.albumName }.mapValues { it.value.size }
-    }
-
-    // Cover image per album
-    val albumCovers = remember(mediaList, albums) {
-        albums.associate { album ->
-            val firstItem = mediaList.firstOrNull { it.albumName == album.name }
-            album.name to (firstItem?.uri ?: album.coverUri)
-        }
-    }
 
     Box(
         modifier = Modifier
@@ -99,38 +84,47 @@ fun AlbumsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${albums.size} FOLDERS",
+                    text = "${albums.size} ${if (albums.size == 1) "ALBUM" else "ALBUMS"}",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Black,
                     color = NeoDark
                 )
 
                 NeoButton(
-                    text = "NEW FOLDER",
+                    text = "NEW ALBUM",
                     onClick = { showCreateDialog = true },
                     containerColor = NeoMint,
-                    leadingIcon = Icons.Default.CreateNewFolder,
+                    leadingIcon = Icons.Default.Add,
                     testTag = "btn_new_folder"
                 )
             }
 
+            // Group once for all album tiles — avoids re-filtering mediaList per album on every recomposition.
+            val albumMediaMap = remember(mediaList) {
+                mediaList.groupBy { it.albumName }
+            }
+
             LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
+                columns = GridCells.Fixed(gridColumns),
                 modifier = Modifier
                     .fillMaxSize()
-                    .testTag("albums_grid"),
+                    .testTag("albums_grid")
+                    .pinchGridZoom(gridColumns, onColumnsChange),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 items(albums, key = { it.id }) { album ->
-                    val count = albumCounts[album.name] ?: 0
-                    val cover = albumCovers[album.name] ?: ""
-
+                    val albumItems = albumMediaMap[album.name] ?: emptyList()
+                    // Latest image in album is the cover — not the stored coverUri which may be stale.
+                    val latestItem = albumItems.maxByOrNull { it.dateTaken }
+                    val coverUri = latestItem?.uri ?: album.coverUri.takeIf { it.isNotBlank() }
+                    val isVideoCover = latestItem?.isVideo ?: false
                     AlbumCard(
                         album = album,
-                        itemCount = count,
-                        coverUri = cover,
+                        coverUri = coverUri,
+                        isVideoCover = isVideoCover,
+                        photoCount = albumItems.size,
                         onClick = { onAlbumClick(album.name) }
                     )
                 }
@@ -195,7 +189,7 @@ fun AlbumsScreen(
                     )
                 },
                 containerColor = NeoBg,
-                shape = RoundedCornerShape(12.dp)
+                shape = RectangleShape
             )
         }
     }
@@ -204,12 +198,11 @@ fun AlbumsScreen(
 @Composable
 fun AlbumCard(
     album: Album,
-    itemCount: Int,
-    coverUri: String,
+    coverUri: String? = null,
+    isVideoCover: Boolean = false,
+    photoCount: Int = 0,
     onClick: () -> Unit
 ) {
-    val context = LocalContext.current
-
     NeoCard(
         onClick = onClick,
         backgroundColor = NeoWhite,
@@ -217,88 +210,98 @@ fun AlbumCard(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // Cover Image
+            // Thumbnail cover
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(1.2f)
+                    .aspectRatio(1f)
                     .background(NeoDark)
+                    .clip(RectangleShape)
             ) {
-                if (coverUri.isNotEmpty()) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(coverUri)
-                            .crossfade(true)
-                            .build(),
+                if (coverUri != null) {
+                    MediaThumbnail(
+                        uri = coverUri,
+                        isVideo = isVideoCover,
                         contentDescription = album.name,
-                        contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.FolderOpen,
-                            contentDescription = null,
-                            tint = NeoYellow,
-                            modifier = Modifier.size(48.dp)
-                        )
-                    }
-                }
-
-                // Item count badge
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(8.dp)
-                ) {
-                    NeoBadge(
-                        text = "$itemCount ITEMS",
-                        backgroundColor = NeoYellow,
-                        textColor = NeoDark
+                    Icon(
+                        imageVector = Icons.Filled.Folder,
+                        contentDescription = null,
+                        tint = NeoWhite.copy(alpha = 0.6f),
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .size(48.dp)
                     )
                 }
+                // Video badge on cover
+                if (isVideoCover && coverUri != null) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(6.dp)
+                            .background(NeoDark.copy(alpha = 0.85f), RectangleShape)
+                            .border(1.dp, NeoWhite, RectangleShape)
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                tint = NeoYellow,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text(
+                                text = "VIDEO",
+                                color = NeoWhite,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Black
+                            )
+                        }
+                    }
+                }
             }
-
-            // Album Info Footer
+            // Footer with album icon + name + count
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(12.dp),
+                    .background(NeoWhite)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(32.dp)
-                        .background(NeoMint, RoundedCornerShape(6.dp))
-                        .border(1.5.dp, NeoBorder, RoundedCornerShape(6.dp)),
+                        .size(28.dp)
+                        .background(NeoYellow, RectangleShape)
+                        .border(1.5.dp, NeoBorder, RectangleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Folder,
+                        imageVector = Icons.Filled.Folder,
                         contentDescription = null,
                         tint = NeoDark,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 }
-
-                Spacer(modifier = Modifier.width(10.dp))
-
-                Column {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = album.name.uppercase(),
+                    fontWeight = FontWeight.Black,
+                    fontSize = 12.sp,
+                    color = NeoDark,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (photoCount > 0) {
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = album.name.uppercase(),
-                        fontWeight = FontWeight.Black,
-                        fontSize = 14.sp,
-                        color = NeoDark,
-                        maxLines = 1
-                    )
-                    Text(
-                        text = if (album.isSystem) "System Album" else "User Folder",
+                        text = "$photoCount",
+                        fontWeight = FontWeight.Bold,
                         fontSize = 11.sp,
-                        color = Color.Gray,
-                        fontWeight = FontWeight.Medium
+                        color = NeoDark.copy(alpha = 0.7f)
                     )
                 }
             }

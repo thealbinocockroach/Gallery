@@ -18,8 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Videocam
@@ -77,8 +76,8 @@ fun VideosScreen(
                     Box(
                         modifier = Modifier
                             .size(72.dp)
-                            .background(NeoCyan, RoundedCornerShape(12.dp))
-                            .border(2.5.dp, NeoBorder, RoundedCornerShape(12.dp)),
+                            .background(NeoCyan, RectangleShape)
+                            .border(2.5.dp, NeoBorder, RectangleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -168,8 +167,8 @@ fun VideosScreen(
                                     modifier = Modifier
                                         .align(Alignment.Center)
                                         .size(56.dp)
-                                        .background(NeoYellow, CircleShape)
-                                        .border(2.5.dp, NeoBorder, CircleShape),
+                                        .background(NeoYellow, RectangleShape)
+                                        .border(2.5.dp, NeoBorder, RectangleShape),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(

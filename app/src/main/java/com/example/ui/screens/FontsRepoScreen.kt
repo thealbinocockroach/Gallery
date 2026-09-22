@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -18,7 +19,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -65,10 +66,12 @@ fun FontsRepoScreen(
     onRemoveFont: (String) -> Unit,
     onClose: () -> Unit
 ) {
-    var testSampleText by remember { mutableStateOf("GALLERY PRO 2026 // FAST & LIGHTWEIGHT") }
+    var testSampleText by remember { mutableStateOf("GALLERY 2026 // FAST & LIGHTWEIGHT") }
     var showInstallDialog by remember { mutableStateOf(false) }
     var customFontName by remember { mutableStateOf("") }
     var customFontCategory by remember { mutableStateOf("Custom User Font") }
+
+    BackHandler(onBack = onClose)
 
     Column(
         modifier = Modifier
@@ -125,8 +128,8 @@ fun FontsRepoScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 6.dp)
-                .background(NeoWhite, RoundedCornerShape(10.dp))
-                .border(2.dp, NeoBorder, RoundedCornerShape(10.dp))
+                .background(NeoWhite, RectangleShape)
+                .border(2.dp, NeoBorder, RectangleShape)
                 .padding(12.dp)
         ) {
             Column {
@@ -290,7 +293,7 @@ fun FontsRepoScreen(
                     )
                 },
                 containerColor = NeoBg,
-                shape = RoundedCornerShape(12.dp)
+                shape = RectangleShape
             )
         }
     }

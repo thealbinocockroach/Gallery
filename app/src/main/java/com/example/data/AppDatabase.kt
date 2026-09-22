@@ -26,7 +26,7 @@ abstract class AppDatabase : RoomDatabase() {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
-                    "gallery_pro_db"
+                    "gallery_db"
                 )
                 .addCallback(DatabaseCallback(scope, context.applicationContext))
                 .build()
@@ -50,83 +50,6 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         suspend fun populateInitialData(dao: MediaDao, context: Context) {
-            // Pre-populate system albums
-            val initialAlbums = listOf(
-                Album(id = 1, name = "Camera", coverUri = "android.resource://${context.packageName}/drawable/sample_neon_city_1789826462211", isSystem = true),
-                Album(id = 2, name = "Screenshots", coverUri = "android.resource://${context.packageName}/drawable/sample_retro_car_1789826484714", isSystem = true),
-                Album(id = 3, name = "Downloads", coverUri = "android.resource://${context.packageName}/drawable/sample_nature_mountain_1789826472915", isSystem = true),
-                Album(id = 4, name = "Edits", coverUri = "", isSystem = true)
-            )
-            dao.insertAllAlbums(initialAlbums)
-
-            val now = System.currentTimeMillis()
-            val dayMs = 86400000L
-
-            // Pre-populate sample photos & videos
-            val initialMedia = listOf(
-                MediaItem(
-                    title = "Cyber Neon Cityscape",
-                    uri = "android.resource://${context.packageName}/drawable/sample_neon_city_1789826462211",
-                    isVideo = false,
-                    durationMs = 0,
-                    sizeBytes = 3450000L,
-                    dateTaken = now,
-                    width = 2400,
-                    height = 1800,
-                    albumName = "Camera",
-                    isFavorite = true
-                ),
-                MediaItem(
-                    title = "Golden Hour Alpine Lake",
-                    uri = "android.resource://${context.packageName}/drawable/sample_nature_mountain_1789826472915",
-                    isVideo = false,
-                    durationMs = 0,
-                    sizeBytes = 4120000L,
-                    dateTaken = now - (dayMs / 3),
-                    width = 1800,
-                    height = 2400,
-                    albumName = "Camera",
-                    isFavorite = true
-                ),
-                MediaItem(
-                    title = "Vintage Roadster & Concrete",
-                    uri = "android.resource://${context.packageName}/drawable/sample_retro_car_1789826484714",
-                    isVideo = false,
-                    durationMs = 0,
-                    sizeBytes = 2890000L,
-                    dateTaken = now - dayMs,
-                    width = 2048,
-                    height = 2048,
-                    albumName = "Screenshots",
-                    isFavorite = false
-                ),
-                MediaItem(
-                    title = "Neobrutalist Motion Reel",
-                    uri = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-                    isVideo = true,
-                    durationMs = 15000L,
-                    sizeBytes = 8500000L,
-                    dateTaken = now - (dayMs * 2),
-                    width = 1920,
-                    height = 1080,
-                    albumName = "Camera",
-                    isFavorite = false
-                ),
-                MediaItem(
-                    title = "Urban Horizon Loop",
-                    uri = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-                    isVideo = true,
-                    durationMs = 32000L,
-                    sizeBytes = 14200000L,
-                    dateTaken = now - (dayMs * 3),
-                    width = 1920,
-                    height = 1080,
-                    albumName = "Downloads",
-                    isFavorite = true
-                )
-            )
-            dao.insertAllMedia(initialMedia)
-
             // Pre-populate Free Fonts Repository
             val initialFonts = listOf(
                 FontItem(

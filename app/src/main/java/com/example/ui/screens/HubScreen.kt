@@ -15,10 +15,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Recycling
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.FontDownload
@@ -98,7 +98,7 @@ fun HubScreen(
                 subtitle = "${trashItems.size} items • Auto-deleted after 30 days",
                 badgeText = if (trashItems.isEmpty()) "EMPTY" else "${trashItems.size} IN BIN",
                 badgeColor = if (trashItems.isEmpty()) NeoMint else NeoPink,
-                icon = Icons.Default.Delete,
+                icon = Icons.Default.Recycling,
                 iconBgColor = NeoPink,
                 onClick = onOpenTrash,
                 testTag = "hub_card_trash"
@@ -149,8 +149,8 @@ fun HubScreen(
                         Box(
                             modifier = Modifier
                                 .size(36.dp)
-                                .background(NeoMint, RoundedCornerShape(8.dp))
-                                .border(1.5.dp, NeoBorder, RoundedCornerShape(8.dp)),
+                                .background(NeoMint, RectangleShape)
+                                .border(1.5.dp, NeoBorder, RectangleShape),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -163,7 +163,7 @@ fun HubScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "GALLERY PRO ENGINE",
+                                text = "GALLERY ENGINE",
                                 fontWeight = FontWeight.Black,
                                 fontSize = 15.sp,
                                 color = NeoDark
@@ -271,8 +271,8 @@ fun HubActionCard(
                 Box(
                     modifier = Modifier
                         .size(44.dp)
-                        .background(iconBgColor, RoundedCornerShape(8.dp))
-                        .border(2.dp, NeoBorder, RoundedCornerShape(8.dp)),
+                        .background(iconBgColor, RectangleShape)
+                        .border(2.dp, NeoBorder, RectangleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(

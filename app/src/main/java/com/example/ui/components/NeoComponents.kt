@@ -13,8 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -46,7 +45,7 @@ fun NeoCard(
     borderWidth: Dp = 2.5.dp,
     shadowOffset: Dp = 4.dp,
     shadowColor: Color = NeoDark,
-    shape: Shape = RoundedCornerShape(10.dp),
+    shape: Shape = RectangleShape,
     onClick: (() -> Unit)? = null,
     testTag: String = "neo_card",
     content: @Composable () -> Unit
@@ -115,15 +114,15 @@ fun NeoButton(
             modifier = Modifier
                 .matchParentSize()
                 .offset(x = shadowOffset, y = shadowOffset)
-                .background(NeoDark, RoundedCornerShape(8.dp))
-                .border(2.5.dp, borderColor, RoundedCornerShape(8.dp))
+                .background(NeoDark, RectangleShape)
+                .border(2.5.dp, borderColor, RectangleShape)
         )
         // Foreground button
         Box(
             modifier = Modifier
                 .offset(x = pressedOffset, y = pressedOffset)
-                .background(containerColor, RoundedCornerShape(8.dp))
-                .border(2.5.dp, borderColor, RoundedCornerShape(8.dp))
+                .background(containerColor, RectangleShape)
+                .border(2.5.dp, borderColor, RectangleShape)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             contentAlignment = Alignment.Center
         ) {
@@ -191,8 +190,8 @@ fun NeoIconButton(
                 modifier = Modifier
                     .matchParentSize()
                     .offset(x = actualShadow, y = actualShadow)
-                    .background(NeoDark, RoundedCornerShape(8.dp))
-                    .border(2.dp, borderColor, RoundedCornerShape(8.dp))
+                    .background(NeoDark, RectangleShape)
+                    .border(2.dp, borderColor, RectangleShape)
             )
         }
         // Button surface
@@ -200,8 +199,8 @@ fun NeoIconButton(
             modifier = Modifier
                 .offset(x = pressOffset, y = pressOffset)
                 .matchParentSize()
-                .background(backgroundColor, RoundedCornerShape(8.dp))
-                .border(2.dp, borderColor, RoundedCornerShape(8.dp)),
+                .background(backgroundColor, RectangleShape)
+                .border(2.dp, borderColor, RectangleShape),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -224,8 +223,8 @@ fun NeoBadge(
 ) {
     Box(
         modifier = modifier
-            .background(backgroundColor, RoundedCornerShape(4.dp))
-            .border(1.5.dp, borderColor, RoundedCornerShape(4.dp))
+            .background(backgroundColor, RectangleShape)
+            .border(1.5.dp, borderColor, RectangleShape)
             .padding(horizontal = 6.dp, vertical = 2.dp)
     ) {
         Text(

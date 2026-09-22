@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,10 +25,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Brush
@@ -63,16 +64,23 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import kotlin.math.roundToInt
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -93,6 +101,9 @@ import com.example.ui.theme.NeoPink
 import com.example.ui.theme.NeoRed
 import com.example.ui.theme.NeoWhite
 import com.example.ui.theme.NeoYellow
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.example.ui.components.ImageCropperView
+import com.example.ui.components.NormalizedCropRect
 import com.example.viewmodel.DrawingPath
 import com.example.viewmodel.EditorState
 import com.example.viewmodel.TextOverlay
@@ -101,12 +112,19 @@ import com.example.viewmodel.TextOverlay
 fun PhotoEditorScreen(
     editorState: EditorState,
     fontsList: List<FontItem>,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
     onToolChange: (String) -> Unit,
     onFilterChange: (String) -> Unit,
     onRotate: () -> Unit,
     onFlipH: () -> Unit,
     onFlipV: () -> Unit,
     onCropRatioChange: (String) -> Unit,
+    onCropChange: (NormalizedCropRect) -> Unit = {},
+    onApplyCrop: () -> Unit = {},
+    onResetCrop: () -> Unit = {},
     onAdjustmentsChange: (Float, Float, Float, Float) -> Unit,
     onAddDrawingPath: (DrawingPath) -> Unit,
     onUndoDrawing: () -> Unit,
@@ -119,6 +137,16 @@ fun PhotoEditorScreen(
     val context = LocalContext.current
     val media = editorState.mediaItem ?: return
 
+    // Back discards the editor (same as the X button).
+    BackHandler(onBack = onClose)
+
+    val editorImageRequest = remember(media.uri) {
+        ImageRequest.Builder(context)
+            .data(media.uri)
+            .crossfade(false)
+            .build()
+    }
+
     var showInstallFontDialog by remember { mutableStateOf(false) }
     var newFontName by remember { mutableStateOf("") }
     var newFontCategory by remember { mutableStateOf("Custom Installed") }
@@ -128,19 +156,54 @@ fun PhotoEditorScreen(
     var brushStrokeWidth by remember { mutableFloatStateOf(8f) }
     var currentDoodlePoints by remember { mutableStateOf<List<Pair<Float, Float>>>(emptyList()) }
 
-    // Text tool state
+    // Text tool state — now fully draggable anywhere on the image
     var editingTextString by remember { mutableStateOf(editorState.textOverlay?.text ?: "") }
     var selectedFontId by remember { mutableStateOf(editorState.textOverlay?.fontId ?: "font_neo_black") }
     var fontSizeSp by remember { mutableFloatStateOf(editorState.textOverlay?.fontSizeSp ?: 26f) }
     var selectedTextColor by remember { mutableStateOf(NeoDark) }
     var selectedBadgeColor by remember { mutableStateOf(NeoYellow) }
     var hasBackgroundBadge by remember { mutableStateOf(true) }
-
-    val cropAspectRatio = when (editorState.cropRatio) {
-        "1:1" -> 1f
-        "4:3" -> 4f / 3f
-        "16:9" -> 16f / 9f
-        else -> null
+    var selectedTextAlign by remember { mutableStateOf(editorState.textOverlay?.textAlign ?: "CENTER") }
+    var badgeAlpha by remember { mutableFloatStateOf(editorState.textOverlay?.badgeAlpha ?: 1f) }
+    var textDragOffset by remember { mutableStateOf(Offset.Zero) }
+    var previewBoxSize by remember { mutableStateOf(IntSize.Zero) }
+    // Sync initial drag offset from stored normalized position (once)
+    androidx.compose.runtime.LaunchedEffect(editorState.textOverlay) {
+        editorState.textOverlay?.let {
+            if (previewBoxSize.width > 0 && previewBoxSize.height > 0) {
+                textDragOffset = Offset(
+                    x = (it.xOffsetNorm - 0.5f) * previewBoxSize.width,
+                    y = (it.yOffsetNorm - 0.5f) * previewBoxSize.height
+                )
+            }
+        }
+    }
+    // Push every local text edit (including drag) to ViewModel so Save persists it
+    androidx.compose.runtime.LaunchedEffect(editingTextString, selectedFontId, fontSizeSp, selectedTextColor, selectedBadgeColor, hasBackgroundBadge, selectedTextAlign, badgeAlpha, textDragOffset, previewBoxSize) {
+        val anchorW = previewBoxSize.width
+        val anchorH = previewBoxSize.height
+        if (editingTextString.isNotBlank() && previewBoxSize.width > 0) {
+            val normX = (0.5f + textDragOffset.x / previewBoxSize.width).coerceIn(0.05f, 0.95f)
+            val normY = (0.5f + textDragOffset.y / previewBoxSize.height).coerceIn(0.05f, 0.95f)
+            onTextOverlayChange(
+                TextOverlay(
+                    text = editingTextString,
+                    fontId = selectedFontId,
+                    fontSizeSp = fontSizeSp,
+                    textColor = selectedTextColor.value.toLong(),
+                    backgroundColor = selectedBadgeColor.value.toLong(),
+                    hasBackgroundBadge = hasBackgroundBadge,
+                    badgeAlpha = badgeAlpha,
+                    textAlign = selectedTextAlign,
+                    xOffsetNorm = normX,
+                    yOffsetNorm = normY,
+                    anchorW = anchorW,
+                    anchorH = anchorH
+                )
+            )
+        } else if (editingTextString.isBlank()) {
+            onTextOverlayChange(null)
+        }
     }
 
     Column(
@@ -151,11 +214,27 @@ fun PhotoEditorScreen(
             .navigationBarsPadding()
             .testTag("photo_editor_screen")
     ) {
+        // Notch Clearance & Safety Line: prevents contents from interfering with camera cutout/notch
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp, bottom = 2.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(42.dp)
+                    .height(3.5.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(NeoDark.copy(alpha = 0.35f))
+            )
+        }
+
         // Top Action Bar: Close, Title, Undo, Save
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -169,7 +248,7 @@ fun PhotoEditorScreen(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 NeoBadge(
-                    text = "STUDIO PRO",
+                    text = "STUDIO",
                     backgroundColor = NeoYellow,
                     textColor = NeoDark
                 )
@@ -183,6 +262,26 @@ fun PhotoEditorScreen(
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                NeoIconButton(
+                    icon = Icons.AutoMirrored.Filled.Undo,
+                    contentDescription = "Undo",
+                    onClick = onUndo,
+                    backgroundColor = if (canUndo) NeoWhite else NeoBg,
+                    tint = if (canUndo) NeoDark else Color.LightGray,
+                    size = 38.dp,
+                    shadowOffset = 2.dp,
+                    testTag = "editor_btn_undo"
+                )
+                NeoIconButton(
+                    icon = Icons.AutoMirrored.Filled.Redo,
+                    contentDescription = "Redo",
+                    onClick = onRedo,
+                    backgroundColor = if (canRedo) NeoWhite else NeoBg,
+                    tint = if (canRedo) NeoDark else Color.LightGray,
+                    size = 38.dp,
+                    shadowOffset = 2.dp,
+                    testTag = "editor_btn_redo"
+                )
                 NeoButton(
                     text = "SAVE",
                     onClick = { onSave(true) },
@@ -199,17 +298,15 @@ fun PhotoEditorScreen(
                 .fillMaxWidth()
                 .weight(1f)
                 .padding(12.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RectangleShape)
                 .background(NeoDark)
-                .border(2.5.dp, NeoBorder, RoundedCornerShape(12.dp)),
+                .border(2.5.dp, NeoBorder, RectangleShape),
             contentAlignment = Alignment.Center
         ) {
             Box(
                 modifier = Modifier
-                    .then(
-                        if (cropAspectRatio != null) Modifier.aspectRatio(cropAspectRatio)
-                        else Modifier.fillMaxSize()
-                    )
+                    .fillMaxSize()
+                    .onSizeChanged { previewBoxSize = it }
                     .graphicsLayer(
                         rotationZ = editorState.rotation,
                         scaleX = if (editorState.flipH) -1f else 1f,
@@ -219,15 +316,30 @@ fun PhotoEditorScreen(
             ) {
                 // Main Photo with Color Filter
                 AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(media.uri)
-                        .crossfade(true)
-                        .build(),
+                    model = editorImageRequest,
                     contentDescription = media.title,
-                    contentScale = if (cropAspectRatio != null) ContentScale.Crop else ContentScale.Fit,
-                    colorFilter = FilterHelper.getColorFilter(editorState.selectedFilter),
+                    contentScale = ContentScale.Fit,
+                    colorFilter = FilterHelper.getColorFilter(
+                        editorState.selectedFilter,
+                        editorState.brightness,
+                        editorState.contrast,
+                        editorState.saturation,
+                        editorState.warmth
+                    ),
                     modifier = Modifier.fillMaxSize()
                 )
+
+                // Interactive Crop Overlay when CROP tool is active
+                if (editorState.activeTool == "CROP") {
+                    ImageCropperView(
+                        imageWidth = media.width,
+                        imageHeight = media.height,
+                        cropRect = editorState.cropRectNorm,
+                        selectedAspectRatio = editorState.cropRatio,
+                        onCropChange = onCropChange,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
 
                 // Doodles Canvas
                 Canvas(
@@ -300,30 +412,84 @@ fun PhotoEditorScreen(
                     }
                 }
 
-                // Text Overlay Preview
+                // Text Overlay Preview — fully draggable anywhere on the image
                 if (editingTextString.isNotBlank()) {
                     Box(
                         modifier = Modifier
-                            .align(Alignment.Center)
-                            .then(
-                                if (hasBackgroundBadge) {
-                                    Modifier
-                                        .background(selectedBadgeColor, RoundedCornerShape(6.dp))
-                                        .border(2.dp, NeoBorder, RoundedCornerShape(6.dp))
-                                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                                } else {
-                                    Modifier.padding(8.dp)
-                                }
-                            )
+                            .fillMaxSize(),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = editingTextString,
-                            color = selectedTextColor,
-                            fontSize = fontSizeSp.sp,
-                            fontFamily = FontHelper.getFontFamilyForId(selectedFontId),
-                            fontWeight = FontHelper.getFontWeightForId(selectedFontId),
-                            fontStyle = FontHelper.getFontStyleForId(selectedFontId)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .offset { IntOffset(textDragOffset.x.roundToInt(), textDragOffset.y.roundToInt()) }
+                                .pointerInput(Unit) {
+                                    detectDragGestures(
+                                        onDragStart = { },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            val next = textDragOffset + dragAmount
+                                            // Keep text inside visible bounds
+                                            val maxX = if (previewBoxSize.width > 0) previewBoxSize.width / 2.5f else 500f
+                                            val maxY = if (previewBoxSize.height > 0) previewBoxSize.height / 2.5f else 500f
+                                            textDragOffset = Offset(
+                                                x = next.x.coerceIn(-maxX, maxX),
+                                                y = next.y.coerceIn(-maxY, maxY)
+                                            )
+                                        }
+                                    )
+                                }
+                                .then(
+                                    if (hasBackgroundBadge) {
+                                        Modifier
+                                            .background(
+                                                selectedBadgeColor.copy(alpha = badgeAlpha),
+                                                RectangleShape
+                                            )
+                                            .border(2.dp, NeoBorder, RectangleShape)
+                                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                                    } else {
+                                        Modifier.padding(8.dp)
+                                    }
+                                )
+                        ) {
+                            // Contrast outline picked from text luminance, so the caption
+                            // stays readable over dark AND bright photos. Outline pass
+                            // draws first (underneath), fill pass with drop shadow on top.
+                            val outlineColor =
+                                if (selectedTextColor.luminance() > 0.5f) NeoDark else NeoWhite
+                            val align = when (selectedTextAlign) {
+                                "LEFT" -> TextAlign.Start
+                                "RIGHT" -> TextAlign.End
+                                else -> TextAlign.Center
+                            }
+                            val captionStyle = TextStyle(
+                                fontSize = fontSizeSp.sp,
+                                fontFamily = FontHelper.getFontFamilyForId(selectedFontId),
+                                fontWeight = FontHelper.getFontWeightForId(selectedFontId),
+                                fontStyle = FontHelper.getFontStyleForId(selectedFontId),
+                                textAlign = align
+                            )
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = editingTextString,
+                                    style = captionStyle.copy(
+                                        color = outlineColor,
+                                        drawStyle = Stroke(width = 8f)
+                                    )
+                                )
+                                Text(
+                                    text = editingTextString,
+                                    style = captionStyle.copy(
+                                        color = selectedTextColor,
+                                        shadow = Shadow(
+                                            color = Color.Black.copy(alpha = 0.6f),
+                                            offset = Offset(3f, 3f),
+                                            blurRadius = 6f
+                                        )
+                                    )
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -340,11 +506,12 @@ fun PhotoEditorScreen(
                     .fillMaxWidth()
                     .padding(vertical = 8.dp)
             ) {
-                // Secondary Controls Row based on active tool
+                // Secondary Controls Row based on active tool (TEXT needs room for
+                // size / align / color / opacity controls, and scrolls internally)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(110.dp)
+                        .height(if (editorState.activeTool == "TEXT") 208.dp else 115.dp)
                         .padding(horizontal = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -358,9 +525,9 @@ fun PhotoEditorScreen(
                                     val isSelected = editorState.selectedFilter == filterName
                                     Box(
                                         modifier = Modifier
-                                            .clip(RoundedCornerShape(8.dp))
+                                            .clip(RectangleShape)
                                             .background(if (isSelected) NeoYellow else NeoBg)
-                                            .border(2.dp, NeoBorder, RoundedCornerShape(8.dp))
+                                            .border(2.dp, NeoBorder, RectangleShape)
                                             .clickable { onFilterChange(filterName) }
                                             .padding(horizontal = 14.dp, vertical = 10.dp),
                                         contentAlignment = Alignment.Center
@@ -379,44 +546,82 @@ fun PhotoEditorScreen(
                         }
 
                         "CROP" -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceEvenly,
-                                verticalAlignment = Alignment.CenterVertically
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                // Rotate 90
-                                NeoButton(
-                                    text = "ROTATE 90°",
-                                    onClick = onRotate,
-                                    containerColor = NeoYellow,
-                                    leadingIcon = Icons.Default.RotateRight
-                                )
+                                // Preset Aspect Ratios Toolbar
+                                LazyRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    contentPadding = PaddingValues(horizontal = 2.dp)
+                                ) {
+                                    val ratios = listOf("Freeform", "1:1", "9:16", "16:9", "4:3", "3:4")
+                                    items(ratios) { ratio ->
+                                        val isSelected = editorState.cropRatio == ratio
+                                        Box(
+                                            modifier = Modifier
+                                                .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
+                                                .border(
+                                                    width = if (isSelected) 2.dp else 1.5.dp,
+                                                    color = if (isSelected) NeoDark else NeoBorder,
+                                                    shape = RectangleShape
+                                                )
+                                                .clickable { onCropRatioChange(ratio) }
+                                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                        ) {
+                                            Text(
+                                                text = ratio.uppercase(),
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = 11.sp,
+                                                color = NeoDark
+                                            )
+                                        }
+                                    }
+                                }
 
-                                // Flip H
-                                NeoIconButton(
-                                    icon = Icons.Default.Flip,
-                                    contentDescription = "Flip Horizontal",
-                                    onClick = onFlipH,
-                                    backgroundColor = NeoWhite
-                                )
-
-                                // Aspect Ratios
-                                listOf("Original", "1:1", "4:3", "16:9").forEach { ratio ->
-                                    val isSelected = editorState.cropRatio == ratio
-                                    Box(
-                                        modifier = Modifier
-                                            .background(if (isSelected) NeoMint else NeoBg, RoundedCornerShape(6.dp))
-                                            .border(1.5.dp, NeoBorder, RoundedCornerShape(6.dp))
-                                            .clickable { onCropRatioChange(ratio) }
-                                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                                // Secondary Actions: Rotate, Flip, Reset & Apply Crop
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(
-                                            text = ratio,
-                                            fontWeight = FontWeight.Black,
-                                            fontSize = 12.sp,
-                                            color = NeoDark
+                                        NeoIconButton(
+                                            icon = Icons.Default.RotateRight,
+                                            contentDescription = "Rotate 90°",
+                                            onClick = onRotate,
+                                            backgroundColor = NeoWhite,
+                                            size = 36.dp
+                                        )
+                                        NeoIconButton(
+                                            icon = Icons.Default.Flip,
+                                            contentDescription = "Flip Horizontal",
+                                            onClick = onFlipH,
+                                            backgroundColor = NeoWhite,
+                                            size = 36.dp
+                                        )
+                                        NeoIconButton(
+                                            icon = Icons.Default.RestartAlt,
+                                            contentDescription = "Reset Crop",
+                                            onClick = onResetCrop,
+                                            backgroundColor = NeoWhite,
+                                            size = 36.dp
                                         )
                                     }
+
+                                    NeoButton(
+                                        text = "APPLY CROP",
+                                        onClick = onApplyCrop,
+                                        containerColor = NeoMint,
+                                        leadingIcon = Icons.Default.Check,
+                                        testTag = "editor_btn_apply_crop"
+                                    )
                                 }
                             }
                         }
@@ -433,7 +638,7 @@ fun PhotoEditorScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "BRIGHTNESS: ${editorState.brightness.toInt()}",
+                                        text = "ADJUST COLOR",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Black
                                     )
@@ -446,16 +651,35 @@ fun PhotoEditorScreen(
                                         }
                                     )
                                 }
-                                Slider(
+                                Spacer(modifier = Modifier.height(2.dp))
+
+                                AdjustSliderRow(
+                                    label = "BRIGHTNESS ${editorState.brightness.toInt()}",
                                     value = editorState.brightness,
                                     onValueChange = {
                                         onAdjustmentsChange(it, editorState.contrast, editorState.saturation, editorState.warmth)
-                                    },
-                                    valueRange = -100f..100f,
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = NeoYellow,
-                                        activeTrackColor = NeoDark
-                                    )
+                                    }
+                                )
+                                AdjustSliderRow(
+                                    label = "CONTRAST ${editorState.contrast.toInt()}",
+                                    value = editorState.contrast,
+                                    onValueChange = {
+                                        onAdjustmentsChange(editorState.brightness, it, editorState.saturation, editorState.warmth)
+                                    }
+                                )
+                                AdjustSliderRow(
+                                    label = "SATURATION ${editorState.saturation.toInt()}",
+                                    value = editorState.saturation,
+                                    onValueChange = {
+                                        onAdjustmentsChange(editorState.brightness, editorState.contrast, it, editorState.warmth)
+                                    }
+                                )
+                                AdjustSliderRow(
+                                    label = "WARMTH ${editorState.warmth.toInt()}",
+                                    value = editorState.warmth,
+                                    onValueChange = {
+                                        onAdjustmentsChange(editorState.brightness, editorState.contrast, editorState.saturation, it)
+                                    }
                                 )
                             }
                         }
@@ -473,11 +697,11 @@ fun PhotoEditorScreen(
                                             Box(
                                                 modifier = Modifier
                                                     .size(28.dp)
-                                                    .background(color, CircleShape)
+                                                    .background(color, RectangleShape)
                                                     .border(
                                                         width = if (selectedBrushColor == color) 3.dp else 1.5.dp,
                                                         color = if (selectedBrushColor == color) NeoDark else NeoBorder,
-                                                        shape = CircleShape
+                                                        shape = RectangleShape
                                                     )
                                                     .clickable { selectedBrushColor = color }
                                             )
@@ -519,7 +743,14 @@ fun PhotoEditorScreen(
                         }
 
                         "TEXT" -> {
-                            Column(modifier = Modifier.fillMaxWidth()) {
+                            var hueDeg by remember { mutableFloatStateOf(200f) }
+                            var hexInput by remember { mutableStateOf("") }
+                            var hexError by remember { mutableStateOf(false) }
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState())
+                            ) {
                                 // Text Input Row
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -561,8 +792,8 @@ fun PhotoEditorScreen(
                                         val isSelected = selectedFontId == font.id
                                         Box(
                                             modifier = Modifier
-                                                .background(if (isSelected) NeoYellow else NeoBg, RoundedCornerShape(6.dp))
-                                                .border(1.5.dp, NeoBorder, RoundedCornerShape(6.dp))
+                                                .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
+                                                .border(1.5.dp, NeoBorder, RectangleShape)
                                                 .clickable { selectedFontId = font.id }
                                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                                         ) {
@@ -574,6 +805,166 @@ fun PhotoEditorScreen(
                                             )
                                         }
                                     }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                // Font size
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("SIZE", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                    Slider(
+                                        value = fontSizeSp,
+                                        onValueChange = { fontSizeSp = it },
+                                        valueRange = 14f..72f,
+                                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                    )
+                                    Text(
+                                        text = "${fontSizeSp.toInt()}",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Black,
+                                        modifier = Modifier.width(28.dp)
+                                    )
+                                }
+
+                                // Alignment segmented control
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("ALIGN", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                    listOf("LEFT", "CENTER", "RIGHT").forEach { option ->
+                                        val isSelected = selectedTextAlign == option
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
+                                                .border(1.5.dp, NeoBorder, RectangleShape)
+                                                .clickable { selectedTextAlign = option }
+                                                .padding(vertical = 5.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = option,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Black,
+                                                color = NeoDark
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                // Preset palette bar for text color
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("COLOR", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                    listOf(
+                                        NeoYellow, NeoMint, NeoCyan, NeoPink,
+                                        NeoOrange, NeoRed, NeoBlue, NeoDark, NeoWhite
+                                    ).forEach { color ->
+                                        Box(
+                                            modifier = Modifier
+                                                .size(26.dp)
+                                                .background(color, RectangleShape)
+                                                .border(
+                                                    width = if (selectedTextColor == color) 3.dp else 1.5.dp,
+                                                    color = if (selectedTextColor == color) NeoDark else NeoBorder,
+                                                    shape = RectangleShape
+                                                )
+                                                .clickable {
+                                                    selectedTextColor = color
+                                                    hexInput = ""
+                                                    hexError = false
+                                                }
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                // HSV hue slider + hex input with live swatch
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .background(selectedTextColor, RectangleShape)
+                                            .border(1.5.dp, NeoBorder, RectangleShape)
+                                    )
+                                    Slider(
+                                        value = hueDeg,
+                                        onValueChange = {
+                                            hueDeg = it
+                                            selectedTextColor = hsvToPickerColor(it)
+                                            hexInput = ""
+                                            hexError = false
+                                        },
+                                        valueRange = 0f..360f,
+                                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                    )
+                                    OutlinedTextField(
+                                        value = hexInput,
+                                        onValueChange = { raw ->
+                                            hexInput = raw
+                                            val parsed = hexToPickerColorOrNull(raw)
+                                            if (parsed != null) {
+                                                selectedTextColor = parsed
+                                                hueDeg = pickerColorToHue(parsed)
+                                                hexError = false
+                                            } else {
+                                                hexError = raw.isNotBlank()
+                                            }
+                                        },
+                                        placeholder = { Text("#RRGGBB", fontSize = 10.sp) },
+                                        singleLine = true,
+                                        isError = hexError,
+                                        modifier = Modifier.width(104.dp).height(48.dp),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = NeoDark,
+                                            unfocusedBorderColor = NeoBorder,
+                                            focusedContainerColor = NeoBg,
+                                            unfocusedContainerColor = NeoBg,
+                                            errorBorderColor = NeoRed
+                                        )
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                // Badge toggle + opacity
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("BADGE", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Switch(
+                                        checked = hasBackgroundBadge,
+                                        onCheckedChange = { hasBackgroundBadge = it },
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = NeoDark,
+                                            checkedTrackColor = NeoYellow,
+                                            uncheckedThumbColor = NeoDark,
+                                            uncheckedTrackColor = NeoBorder
+                                        )
+                                    )
+                                    Slider(
+                                        value = badgeAlpha,
+                                        onValueChange = { badgeAlpha = it },
+                                        valueRange = 0f..1f,
+                                        enabled = hasBackgroundBadge,
+                                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
+                                    )
+                                    Text(
+                                        text = "${(badgeAlpha * 100).toInt()}%",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Black,
+                                        modifier = Modifier.width(36.dp)
+                                    )
                                 }
                             }
                         }
@@ -614,8 +1005,8 @@ fun PhotoEditorScreen(
                             Box(
                                 modifier = Modifier
                                     .size(36.dp)
-                                    .background(if (isSelected) NeoYellow else NeoBg, RoundedCornerShape(8.dp))
-                                    .border(1.5.dp, NeoBorder, RoundedCornerShape(8.dp)),
+                                    .background(if (isSelected) NeoYellow else NeoBg, RectangleShape)
+                                    .border(1.5.dp, NeoBorder, RectangleShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
@@ -653,7 +1044,7 @@ fun PhotoEditorScreen(
                 text = {
                     Column {
                         Text(
-                            text = "Add any custom .TTF/.OTF font into your local Gallery Pro studio library:",
+                            text = "Add any custom .TTF/.OTF font into your local Gallery studio library:",
                             fontSize = 13.sp,
                             color = NeoDark
                         )
@@ -694,8 +1085,71 @@ fun PhotoEditorScreen(
                     )
                 },
                 containerColor = NeoBg,
-                shape = RoundedCornerShape(12.dp)
+                shape = RectangleShape
             )
         }
+    }
+}
+
+/**
+ * Custom color-picker helpers: preset palette + HSV hue slider + hex input.
+ * [hsvToPickerColor] maps a 0..360 hue to a vivid color; [hexToPickerColorOrNull]
+ * accepts #RRGGBB or #AARRGGBB; [pickerColorToHue] syncs the hue slider to a pick.
+ */
+private fun hsvToPickerColor(hue: Float, sat: Float = 0.85f, value: Float = 1f): Color {
+    val rgb = android.graphics.Color.HSVToColor(
+        floatArrayOf(hue.coerceIn(0f, 360f), sat.coerceIn(0f, 1f), value.coerceIn(0f, 1f))
+    )
+    return Color(rgb)
+}
+
+private fun hexToPickerColorOrNull(raw: String): Color? {
+    return try {
+        val hex = raw.trim().removePrefix("#")
+        val argb = when (hex.length) {
+            6 -> "FF$hex"
+            8 -> hex
+            else -> return null
+        }
+        Color(argb.toULong(16))
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun pickerColorToHue(color: Color): Float {
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(color.toArgb(), hsv)
+    return hsv[0]
+}
+
+@Composable
+private fun AdjustSliderRow(
+    label: String,
+    value: Float,
+    onValueChange: (Float) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Black,
+            modifier = Modifier.width(110.dp)
+        )
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = -100f..100f,
+            modifier = Modifier.weight(1f),
+            colors = SliderDefaults.colors(
+                thumbColor = NeoYellow,
+                activeTrackColor = NeoDark
+            )
+        )
     }
 }

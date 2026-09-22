@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,8 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteForever
@@ -42,15 +42,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.example.data.MediaItem
 import com.example.ui.components.NeoBadge
 import com.example.ui.components.NeoButton
@@ -73,9 +69,10 @@ fun TrashScreen(
     onEmptyTrash: () -> Unit,
     onClose: () -> Unit
 ) {
-    val context = LocalContext.current
     var selectedItemForAction by remember { mutableStateOf<MediaItem?>(null) }
     var showEmptyConfirmDialog by remember { mutableStateOf(false) }
+
+    BackHandler(onBack = onClose)
 
     Column(
         modifier = Modifier
@@ -134,8 +131,8 @@ fun TrashScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 6.dp)
-                .background(NeoYellow, RoundedCornerShape(8.dp))
-                .border(2.dp, NeoBorder, RoundedCornerShape(8.dp))
+                .background(NeoYellow, RectangleShape)
+                .border(2.dp, NeoBorder, RectangleShape)
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -167,8 +164,8 @@ fun TrashScreen(
                     Box(
                         modifier = Modifier
                             .size(72.dp)
-                            .background(NeoMint, RoundedCornerShape(12.dp))
-                            .border(2.5.dp, NeoBorder, RoundedCornerShape(12.dp)),
+                            .background(NeoMint, RectangleShape)
+                            .border(2.5.dp, NeoBorder, RectangleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -207,19 +204,16 @@ fun TrashScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(1f)
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RectangleShape)
                             .background(NeoDark)
-                            .border(2.dp, NeoBorder, RoundedCornerShape(8.dp))
+                            .border(2.dp, NeoBorder, RectangleShape)
                             .clickable { selectedItemForAction = item }
                     ) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(item.uri)
-                                .crossfade(true)
-                                .build(),
+                        MediaThumbnail(
+                            uri = item.uri,
+                            isVideo = item.isVideo,
+                            filterName = item.filterName,
                             contentDescription = item.title,
-                            contentScale = ContentScale.Crop,
-                            colorFilter = FilterHelper.getColorFilter(item.filterName),
                             modifier = Modifier.fillMaxSize()
                         )
 
@@ -293,7 +287,7 @@ fun TrashScreen(
                     )
                 },
                 containerColor = NeoBg,
-                shape = RoundedCornerShape(12.dp)
+                shape = RectangleShape
             )
         }
 
@@ -336,7 +330,7 @@ fun TrashScreen(
                     )
                 },
                 containerColor = NeoBg,
-                shape = RoundedCornerShape(12.dp)
+                shape = RectangleShape
             )
         }
     }

@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.net.Uri
 import android.os.Build
 import android.widget.VideoView
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -11,6 +12,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -25,8 +28,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeMute
@@ -44,8 +46,6 @@ import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -69,7 +69,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.data.MediaItem
-import com.example.ui.components.NeoBadge
 import com.example.ui.components.NeoButton
 import com.example.ui.components.NeoIconButton
 import com.example.ui.theme.NeoBg
@@ -107,6 +106,9 @@ fun DedicatedVideoPlayerScreen(
     var doubleTapFeedback by remember { mutableStateOf<String?>(null) }
 
     var videoViewRef by remember { mutableStateOf<VideoView?>(null) }
+
+    // Back closes the player (returns to the screen it was opened from).
+    BackHandler(onBack = onClose)
 
     // Coroutine to poll video playback position
     LaunchedEffect(isPlaying) {
@@ -213,8 +215,8 @@ fun DedicatedVideoPlayerScreen(
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .background(NeoYellow, RoundedCornerShape(12.dp))
-                    .border(2.5.dp, NeoBorder, RoundedCornerShape(12.dp))
+                    .background(NeoYellow, RectangleShape)
+                    .border(2.5.dp, NeoBorder, RectangleShape)
                     .padding(horizontal = 24.dp, vertical = 12.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -289,11 +291,6 @@ fun DedicatedVideoPlayerScreen(
                             fontSize = 14.sp,
                             maxLines = 1
                         )
-                        NeoBadge(
-                            text = "SAMSUNG PLAYER STYLE",
-                            backgroundColor = NeoCyan,
-                            textColor = NeoDark
-                        )
                     }
                 }
             }
@@ -327,8 +324,8 @@ fun DedicatedVideoPlayerScreen(
                     Box(
                         modifier = Modifier
                             .size(72.dp)
-                            .background(NeoYellow, CircleShape)
-                            .border(3.dp, NeoBorder, CircleShape)
+                            .background(NeoYellow, RectangleShape)
+                            .border(3.dp, NeoBorder, RectangleShape)
                             .clickable {
                                 val vv = videoViewRef
                                 if (vv != null) {
@@ -380,8 +377,8 @@ fun DedicatedVideoPlayerScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp)
-                        .background(NeoDark, RoundedCornerShape(14.dp))
-                        .border(2.5.dp, NeoBorder, RoundedCornerShape(14.dp))
+                        .background(NeoDark, RectangleShape)
+                        .border(2.5.dp, NeoBorder, RectangleShape)
                         .padding(14.dp)
                 ) {
                     // Time Scrubber Row
@@ -399,22 +396,34 @@ fun DedicatedVideoPlayerScreen(
                             fontSize = 12.sp
                         )
 
-                        Slider(
-                            value = (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f),
-                            onValueChange = { norm ->
-                                val target = (norm * durationMs).toLong()
-                                currentPositionMs = target
-                                videoViewRef?.seekTo(target.toInt())
-                            },
+                        // Squared Samsung-style scrubber
+                        Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .padding(horizontal = 8.dp),
-                            colors = SliderDefaults.colors(
-                                thumbColor = NeoYellow,
-                                activeTrackColor = NeoYellow,
-                                inactiveTrackColor = Color.DarkGray
+                                .padding(horizontal = 8.dp)
+                                .height(10.dp)
+                                .background(Color.DarkGray, RectangleShape)
+                                .pointerInput(durationMs) {
+                                    detectDragGestures(
+                                        onDrag = { change, _ ->
+                                            change.consume()
+                                            val fraction = (change.position.x / size.width).coerceIn(0f, 1f)
+                                            val target = (fraction * durationMs).toLong()
+                                            currentPositionMs = target
+                                            videoViewRef?.seekTo(target.toInt())
+                                        }
+                                    )
+                                },
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            val norm = (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(fraction = norm)
+                                    .fillMaxHeight()
+                                    .background(NeoYellow, RectangleShape)
                             )
-                        )
+                        }
 
                         val totalSec = (durationMs / 1000) % 60
                         val totalMin = durationMs / 60000
@@ -449,8 +458,8 @@ fun DedicatedVideoPlayerScreen(
                         // Playback Speed Selector (0.5x, 1x, 1.25x, 1.5x, 2x)
                         Box(
                             modifier = Modifier
-                                .background(NeoWhite, RoundedCornerShape(8.dp))
-                                .border(1.5.dp, NeoBorder, RoundedCornerShape(8.dp))
+                                .background(NeoWhite, RectangleShape)
+                                .border(1.5.dp, NeoBorder, RectangleShape)
                                 .clickable {
                                     val nextSpeed = when (playbackSpeed) {
                                         0.5f -> 1.0f

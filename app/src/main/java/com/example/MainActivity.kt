@@ -1,12 +1,16 @@
 package com.example
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedContent
@@ -27,17 +31,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddPhotoAlternate
-import androidx.compose.material.icons.filled.Checklist
-import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.Recycling
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -56,23 +57,25 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.ui.components.NeoBadge
 import com.example.ui.components.NeoIconButton
 import com.example.ui.screens.AlbumDetailScreen
 import com.example.ui.screens.AlbumsScreen
 import com.example.ui.screens.DedicatedVideoPlayerScreen
+import com.example.ui.screens.FavoritesScreen
 import com.example.ui.screens.FontsRepoScreen
-import com.example.ui.screens.HubScreen
 import com.example.ui.screens.MediaViewerScreen
 import com.example.ui.screens.PhotoEditorScreen
 import com.example.ui.screens.TimelinePicturesScreen
 import com.example.ui.screens.TrashScreen
-import com.example.ui.screens.VideosScreen
-import com.example.ui.theme.GalleryProTheme
+import com.example.ui.theme.GalleryTheme
 import com.example.ui.theme.NeoBg
 import com.example.ui.theme.NeoBorder
 import com.example.ui.theme.NeoCyan
@@ -91,10 +94,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
+        // Fullscreen: hide the status bar so the app draws edge-to-edge.
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.statusBars())
+        }
 
         setContent {
-            GalleryProTheme {
+            GalleryTheme {
                 GalleryApp(viewModel = viewModel)
             }
         }
@@ -110,13 +120,16 @@ fun GalleryApp(viewModel: GalleryViewModel) {
     val allMedia by viewModel.allMedia.collectAsStateWithLifecycle()
     val albums by viewModel.albums.collectAsStateWithLifecycle()
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
-    val videos by viewModel.videos.collectAsStateWithLifecycle()
     val trashMedia by viewModel.trashMedia.collectAsStateWithLifecycle()
     val fontsList by viewModel.fonts.collectAsStateWithLifecycle()
 
-    val gridColumnCount by viewModel.gridColumnCount.collectAsStateWithLifecycle()
+    val mediaGridColumnCount by viewModel.mediaGridColumnCount.collectAsStateWithLifecycle()
+    val albumsGridColumnCount by viewModel.albumsGridColumnCount.collectAsStateWithLifecycle()
+    val albumGridColumnCounts by viewModel.albumGridColumnCounts.collectAsStateWithLifecycle()
     val isSelectionMode by viewModel.isSelectionMode.collectAsStateWithLifecycle()
     val selectedMediaIds by viewModel.selectedMediaIds.collectAsStateWithLifecycle()
+    val canUndoEditor by viewModel.canUndoEditor.collectAsStateWithLifecycle()
+    val canRedoEditor by viewModel.canRedoEditor.collectAsStateWithLifecycle()
 
     val viewerMediaList by viewModel.viewerMediaList.collectAsStateWithLifecycle()
     val activeMediaIndex by viewModel.activeMediaIndex.collectAsStateWithLifecycle()
@@ -131,13 +144,46 @@ fun GalleryApp(viewModel: GalleryViewModel) {
     val editorState by viewModel.editorState.collectAsStateWithLifecycle()
     val selectedAlbumName by viewModel.selectedAlbumName.collectAsStateWithLifecycle()
     val feedbackMessage by viewModel.feedbackMessage.collectAsStateWithLifecycle()
+    val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
 
-    // Zero-permission Android Photo Picker
-    val mediaPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia()
-    ) { uris ->
-        if (uris.isNotEmpty()) {
-            viewModel.importMedia(uris, isVideo = false)
+    // Hoisted timeline grid state — survives viewer navigation so scroll position is restored
+    val timelineGridState = rememberLazyGridState()
+
+    // Back in selection mode clears the selection first.
+    // Sub-screen BackHandlers (composed later) take priority when active.
+    BackHandler(enabled = isSelectionMode) {
+        viewModel.clearSelection()
+    }
+
+    // Runtime permission for reading device media (Android 13+ uses READ_MEDIA_*)
+    val mediaPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        val granted = if (Build.VERSION.SDK_INT >= 33) {
+            result[Manifest.permission.READ_MEDIA_IMAGES] == true ||
+                result[Manifest.permission.READ_MEDIA_VIDEO] == true
+        } else {
+            result[Manifest.permission.READ_EXTERNAL_STORAGE] == true
+        }
+        if (granted) {
+            viewModel.refreshDeviceMedia()
+        }
+    }
+
+    // Request device media permission on first launch, then sync device contents.
+    LaunchedEffect(Unit) {
+        val permissions = if (Build.VERSION.SDK_INT >= 33) {
+            arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        val missing = permissions.filter {
+            context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            viewModel.refreshDeviceMedia()
+        } else {
+            mediaPermissionLauncher.launch(missing.toTypedArray())
         }
     }
 
@@ -161,16 +207,10 @@ fun GalleryApp(viewModel: GalleryViewModel) {
             when (currentScreen) {
                 ActiveScreen.MAIN -> {
                     Column(modifier = Modifier.fillMaxSize()) {
-                        // Neo Top Bar
+                        // Top bar: GALLERY title + Favorites / Recycle Bin shortcuts
                         GalleryTopBar(
-                            currentTab = currentTab,
-                            isSelectionMode = isSelectionMode,
-                            onToggleSelectionMode = { viewModel.toggleSelectionMode() },
-                            onImportMedia = {
-                                mediaPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                )
-                            }
+                            onOpenFavorites = { viewModel.openFavorites() },
+                            onOpenTrash = { viewModel.openTrash() }
                         )
 
                         // Main Content depending on Tab
@@ -185,14 +225,14 @@ fun GalleryApp(viewModel: GalleryViewModel) {
                                 label = "TabContent"
                             ) { targetTab ->
                                 when (targetTab) {
-                                    GalleryTab.PICTURES -> {
+                                    GalleryTab.MEDIA -> {
                                         TimelinePicturesScreen(
                                             mediaList = allMedia,
                                             albums = albums,
-                                            gridColumns = gridColumnCount,
+                                            gridColumns = mediaGridColumnCount,
                                             isSelectionMode = isSelectionMode,
                                             selectedIds = selectedMediaIds,
-                                            onColumnsChange = { viewModel.setGridColumnCount(it) },
+                                            onColumnsChange = { viewModel.setMediaGridColumnCount(it) },
                                             onMediaClick = { media ->
                                                 viewModel.openViewer(media, allMedia)
                                             },
@@ -216,7 +256,13 @@ fun GalleryApp(viewModel: GalleryViewModel) {
                                             },
                                             onMoveSelectedToAlbum = { albumName ->
                                                 viewModel.moveSelectedToAlbum(albumName)
-                                            }
+                                            },
+                                            onCopySelectedToAlbum = { albumName ->
+                                                viewModel.copySelectedToAlbum(albumName)
+                                            },
+                                            onToggleFavorite = { viewModel.toggleFavorite(it) },
+                                            isLoading = isSyncing && allMedia.isEmpty(),
+                                            gridState = timelineGridState
                                         )
                                     }
 
@@ -224,36 +270,14 @@ fun GalleryApp(viewModel: GalleryViewModel) {
                                         AlbumsScreen(
                                             albums = albums,
                                             mediaList = allMedia,
+                                            gridColumns = albumsGridColumnCount,
+                                            onColumnsChange = { viewModel.setAlbumsGridColumnCount(it) },
                                             onAlbumClick = { albumName ->
                                                 viewModel.openAlbum(albumName)
                                             },
                                             onCreateAlbum = { name ->
                                                 viewModel.createNewAlbum(name)
                                             }
-                                        )
-                                    }
-
-                                    GalleryTab.VIDEOS -> {
-                                        VideosScreen(
-                                            videoList = videos,
-                                            onVideoClick = { video ->
-                                                viewModel.openVideoPlayer(video)
-                                            }
-                                        )
-                                    }
-
-                                    GalleryTab.HUB -> {
-                                        HubScreen(
-                                            trashItems = trashMedia,
-                                            favoriteItems = favorites,
-                                            fontsList = fontsList,
-                                            totalMediaCount = allMedia.size,
-                                            onOpenTrash = { viewModel.openTrash() },
-                                            onOpenFavorites = {
-                                                // Switch to pictures tab filtered or show favorites
-                                                viewModel.openAlbum("Favorites")
-                                            },
-                                            onOpenFontsRepo = { viewModel.openFontsRepo() }
                                         )
                                     }
                                 }
@@ -308,12 +332,19 @@ fun GalleryApp(viewModel: GalleryViewModel) {
                     PhotoEditorScreen(
                         editorState = editorState,
                         fontsList = fontsList,
+                        canUndo = canUndoEditor,
+                        canRedo = canRedoEditor,
+                        onUndo = { viewModel.undoEditor() },
+                        onRedo = { viewModel.redoEditor() },
                         onToolChange = { viewModel.setEditorTool(it) },
                         onFilterChange = { viewModel.setEditorFilter(it) },
                         onRotate = { viewModel.rotateEditor90() },
                         onFlipH = { viewModel.flipEditorH() },
                         onFlipV = { viewModel.flipEditorV() },
                         onCropRatioChange = { viewModel.setEditorCropRatio(it) },
+                        onCropChange = { viewModel.updateEditorCropRect(it) },
+                        onApplyCrop = { viewModel.applyCrop() },
+                        onResetCrop = { viewModel.resetEditorCropRect() },
                         onAdjustmentsChange = { b, c, s, w ->
                             viewModel.updateEditorAdjustment(b, c, s, w)
                         },
@@ -346,20 +377,60 @@ fun GalleryApp(viewModel: GalleryViewModel) {
                         AlbumDetailScreen(
                             albumName = albumName,
                             mediaList = allMedia,
-                            gridColumns = gridColumnCount,
-                            onColumnsChange = { viewModel.setGridColumnCount(it) },
+                            albums = albums,
+                            gridColumns = albumGridColumnCounts[albumName] ?: albumsGridColumnCount,
+                            isSelectionMode = isSelectionMode,
+                            selectedIds = selectedMediaIds,
+                            onColumnsChange = { viewModel.setAlbumGridColumnCount(albumName, it) },
                             onMediaClick = { media ->
                                 val albumItems = allMedia.filter { it.albumName.equals(albumName, ignoreCase = true) }
                                 viewModel.openViewer(media, albumItems)
                             },
-                            onAddMediaClick = {
-                                mediaPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                )
+                            onMediaLongClick = { media ->
+                                if (!isSelectionMode) {
+                                    viewModel.toggleSelectionMode()
+                                }
+                                viewModel.toggleMediaSelection(media.id)
                             },
-                            onClose = { viewModel.closeAlbumDetail() }
+                            onSelectToggle = { id -> viewModel.toggleMediaSelection(id) },
+                            onSelectAll = {
+                                viewModel.selectAll(allMedia.filter {
+                                    it.albumName.equals(albumName, ignoreCase = true)
+                                })
+                            },
+                            onClearSelection = { viewModel.clearSelection() },
+                            onDeleteSelected = { viewModel.deleteSelectedToTrash() },
+                            onMoveSelectedToAlbum = { target ->
+                                viewModel.moveSelectedToAlbum(target)
+                            },
+                            onCopySelectedToAlbum = { target ->
+                                viewModel.copySelectedToAlbum(target)
+                            },
+                            onClose = { viewModel.closeAlbumDetail() },
+                            onToggleFavorite = { viewModel.toggleFavorite(it) }
                         )
                     }
+                }
+
+                ActiveScreen.FAVORITES -> {
+                    FavoritesScreen(
+                        favoriteItems = favorites,
+                        isSelectionMode = isSelectionMode,
+                        selectedIds = selectedMediaIds,
+                        onMediaClick = { media ->
+                            viewModel.openViewer(media, favorites)
+                        },
+                        onMediaLongClick = { media ->
+                            if (!isSelectionMode) {
+                                viewModel.toggleSelectionMode()
+                            }
+                            viewModel.toggleMediaSelection(media.id)
+                        },
+                        onSelectToggle = { id -> viewModel.toggleMediaSelection(id) },
+                        onClearSelection = { viewModel.clearSelection() },
+                        onClose = { viewModel.closeFavorites() },
+                        onToggleFavorite = { viewModel.toggleFavorite(it) }
+                    )
                 }
 
                 ActiveScreen.FONTS_REPO -> {
@@ -381,93 +452,52 @@ fun GalleryApp(viewModel: GalleryViewModel) {
 
 @Composable
 fun GalleryTopBar(
-    currentTab: GalleryTab,
-    isSelectionMode: Boolean,
-    onToggleSelectionMode: () -> Unit,
-    onImportMedia: () -> Unit
+    onOpenFavorites: () -> Unit,
+    onOpenTrash: () -> Unit
 ) {
     Surface(
         modifier = Modifier
-            .fillMaxWidth()
-            .statusBarsPadding(),
-        color = NeoWhite,
+            .fillMaxWidth(),
+        color = NeoDark,
         border = androidx.compose.foundation.BorderStroke(2.dp, NeoBorder)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // App Title Logo with neobrutalist badge
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(NeoYellow, RoundedCornerShape(8.dp))
-                        .border(2.dp, NeoBorder, RoundedCornerShape(8.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "GP",
-                        fontWeight = FontWeight.Black,
-                        fontSize = 16.sp,
-                        color = NeoDark
-                    )
-                }
+            Text(
+                text = "GALLERY",
+                color = NeoWhite,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = FontFamily.Monospace
+            )
 
-                Spacer(modifier = Modifier.width(10.dp))
-
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "GALLERY",
-                            fontWeight = FontWeight.Black,
-                            fontSize = 18.sp,
-                            color = NeoDark
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        NeoBadge(
-                            text = "PRO",
-                            backgroundColor = NeoPink,
-                            textColor = NeoWhite
-                        )
-                    }
-                    Text(
-                        text = "LIGHTWEIGHT • LOCAL • SAMSUNG GESTURES",
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Black,
-                        color = Color.Gray
-                    )
-                }
-            }
-
-            // Top Actions: Import (+) & Select Checkmark
             Row(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Select Mode Toggle
                 NeoIconButton(
-                    icon = Icons.Default.Checklist,
-                    contentDescription = "Selection Mode",
-                    onClick = onToggleSelectionMode,
-                    backgroundColor = if (isSelectionMode) NeoYellow else NeoWhite,
-                    size = 38.dp,
+                    icon = Icons.Default.Favorite,
+                    contentDescription = "Favorites",
+                    onClick = onOpenFavorites,
+                    backgroundColor = NeoPink,
+                    size = 34.dp,
                     shadowOffset = 2.dp,
-                    testTag = "top_btn_selection"
+                    testTag = "top_btn_favorites"
                 )
 
-                // Import Media (+)
                 NeoIconButton(
-                    icon = Icons.Default.AddPhotoAlternate,
-                    contentDescription = "Import Photos/Videos",
-                    onClick = onImportMedia,
+                    icon = Icons.Default.Recycling,
+                    contentDescription = "Recycle Bin",
+                    onClick = onOpenTrash,
                     backgroundColor = NeoMint,
-                    size = 38.dp,
+                    size = 34.dp,
                     shadowOffset = 2.dp,
-                    testTag = "top_btn_import"
+                    testTag = "top_btn_trash"
                 )
             }
         }
@@ -494,39 +524,21 @@ fun GalleryBottomNavBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             NavBarItem(
-                title = "PICTURES",
+                title = "MEDIA",
                 icon = Icons.Default.PhotoLibrary,
-                isSelected = currentTab == GalleryTab.PICTURES,
+                isSelected = currentTab == GalleryTab.MEDIA,
                 selectedColor = NeoYellow,
-                onClick = { onTabSelected(GalleryTab.PICTURES) },
-                testTag = "tab_pictures"
+                onClick = { onTabSelected(GalleryTab.MEDIA) },
+                testTag = "tab_media"
             )
 
             NavBarItem(
                 title = "ALBUMS",
-                icon = Icons.Default.Folder,
+                icon = Icons.Filled.Folder,
                 isSelected = currentTab == GalleryTab.ALBUMS,
                 selectedColor = NeoMint,
                 onClick = { onTabSelected(GalleryTab.ALBUMS) },
                 testTag = "tab_albums"
-            )
-
-            NavBarItem(
-                title = "VIDEOS",
-                icon = Icons.Default.Videocam,
-                isSelected = currentTab == GalleryTab.VIDEOS,
-                selectedColor = NeoCyan,
-                onClick = { onTabSelected(GalleryTab.VIDEOS) },
-                testTag = "tab_videos"
-            )
-
-            NavBarItem(
-                title = "HUB",
-                icon = Icons.Default.Dashboard,
-                isSelected = currentTab == GalleryTab.HUB,
-                selectedColor = NeoPink,
-                onClick = { onTabSelected(GalleryTab.HUB) },
-                testTag = "tab_hub"
             )
         }
     }
@@ -535,7 +547,7 @@ fun GalleryBottomNavBar(
 @Composable
 fun NavBarItem(
     title: String,
-    icon: ImageVector,
+    icon: ImageVector?,
     isSelected: Boolean,
     selectedColor: Color,
     onClick: () -> Unit,
@@ -543,32 +555,34 @@ fun NavBarItem(
 ) {
     Column(
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RectangleShape)
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 6.dp)
             .testTag(testTag),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(if (isSelected) selectedColor else Color.Transparent)
-                .then(
-                    if (isSelected) Modifier.border(2.dp, NeoBorder, RoundedCornerShape(8.dp))
-                    else Modifier
+        if (icon != null) {
+            Box(
+                modifier = Modifier
+                    .clip(RectangleShape)
+                    .background(if (isSelected) selectedColor else Color.Transparent)
+                    .then(
+                        if (isSelected) Modifier.border(2.dp, NeoBorder, RectangleShape)
+                        else Modifier
+                    )
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = title,
+                    tint = NeoDark,
+                    modifier = Modifier.size(20.dp)
                 )
-                .padding(horizontal = 14.dp, vertical = 4.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = title,
-                tint = NeoDark,
-                modifier = Modifier.size(20.dp)
-            )
-        }
+            }
 
-        Spacer(modifier = Modifier.height(2.dp))
+            Spacer(modifier = Modifier.height(2.dp))
+        }
 
         Text(
             text = title,

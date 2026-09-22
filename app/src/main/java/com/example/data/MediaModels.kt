@@ -41,5 +41,5 @@ data class FontItem(
     val category: String,
     val isCustomInstalled: Boolean = false,
     val fontPath: String? = null,
-    val previewText: String = "NEOBRUTALIST GALLERY PRO 2026"
+    val previewText: String = "NEOBRUTALIST GALLERY 2026"
 )
