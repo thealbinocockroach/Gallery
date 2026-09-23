@@ -868,9 +868,10 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         val cropRect = state.cropRectNorm
 
         val rotation = ((state.rotation % 360f) + 360f) % 360f
+        val straighten = state.levelAngle.coerceIn(-45f, 45f)
         if (cropRect.left <= 0.005f && cropRect.top <= 0.005f &&
             cropRect.right >= 0.995f && cropRect.bottom >= 0.995f &&
-            rotation == 0f && !state.flipH && !state.flipV
+            rotation == 0f && !state.flipH && !state.flipV && straighten == 0f
         ) {
             showFeedback("Image already at full frame")
             return
@@ -879,16 +880,31 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val context = getApplication<Application>()
-                // Region decode: only the cropped window is ever decoded, then the
-                // preview transform (rotation/flip) is baked into that small result.
-                val cropped = cropRegionEfficient(
-                    context = context,
-                    uriString = original.uri,
-                    rect = cropRect,
-                    rotationDegrees = rotation,
-                    flipH = state.flipH,
-                    flipV = state.flipV
-                )
+                // The overlay box lives in the straightened frame, which region decode
+                // can't represent — so with straightening active, full-decode, bake the
+                // effective rotation, then cut the axis-aligned box from baked pixels.
+                // Otherwise use the cheap region-decode path.
+                val cropped = if (straighten != 0f) {
+                    cropStraightened(
+                        context = context,
+                        uriString = original.uri,
+                        rect = cropRect,
+                        effectiveRotation = ((rotation + straighten) % 360f + 360f) % 360f,
+                        flipH = state.flipH,
+                        flipV = state.flipV
+                    )
+                } else {
+                    // Region decode: only the cropped window is ever decoded, then the
+                    // preview transform (rotation/flip) is baked into that small result.
+                    cropRegionEfficient(
+                        context = context,
+                        uriString = original.uri,
+                        rect = cropRect,
+                        rotationDegrees = rotation,
+                        flipH = state.flipH,
+                        flipV = state.flipV
+                    )
+                }
                 if (cropped == null) {
                     showFeedback("Could not load image for cropping")
                     return@launch
@@ -921,6 +937,9 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                     rotation = 0f,
                     flipH = false,
                     flipV = false,
+                    levelAngle = 0f,
+                    perspectiveHorizontal = 0f,
+                    perspectiveVertical = 0f,
                     cropRectNorm = NormalizedCropRect.FULL,
                     cropRatio = "Freeform"
                 )
@@ -979,6 +998,46 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             bakeTransform(window, rotationDegrees, flipH, flipV)
         } catch (_: Exception) {
             cropViaFullDecode(context, uriString, rect, rotationDegrees, flipH, flipV)
+        }
+    }
+
+    /**
+     * Straightened crop: the overlay box lives in the arbitrarily-rotated frame,
+     * which region decode cannot represent — so full-decode, bake the effective
+     * rotation (+ mirrors), then cut the axis-aligned box straight from baked pixels.
+     */
+    private suspend fun cropStraightened(
+        context: android.content.Context,
+        uriString: String,
+        rect: NormalizedCropRect,
+        effectiveRotation: Float,
+        flipH: Boolean,
+        flipV: Boolean
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        try {
+            val full = decodeFullBitmap(context, uriString) ?: return@withContext null
+            try {
+                val baked = bakeTransform(full, effectiveRotation, flipH, flipV)
+                if (baked != full) {
+                    try { full.recycle() } catch (_: Exception) {}
+                }
+                val px = rect.toPixelRect(baked.width, baked.height)
+                val window = Bitmap.createBitmap(
+                    baked,
+                    px.left.toInt(), px.top.toInt(),
+                    (px.right - px.left).toInt().coerceAtLeast(1),
+                    (px.bottom - px.top).toInt().coerceAtLeast(1)
+                )
+                if (window != baked) {
+                    try { baked.recycle() } catch (_: Exception) {}
+                }
+                window
+            } catch (_: Exception) {
+                try { full.recycle() } catch (_: Exception) {}
+                null
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -1412,28 +1471,23 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             }
             bmp = out
         }
-        val kh = (perspH / 45f).coerceIn(-1f, 1f) * 0.15f
-        val kv = (perspV / 45f).coerceIn(-1f, 1f) * 0.15f
-        if (kh != 0f || kv != 0f) {
+        // Keystone correction: PERSP-V narrows/widens the TOP edge (vertical tilt),
+        // PERSP-H narrows/widens the LEFT edge (horizontal tilt). Combined quad
+        // reduces exactly to each single-axis case; insets stay <=15% so no fold.
+        val it = (perspV / 45f).coerceIn(-1f, 1f) * 0.15f
+        val il = (perspH / 45f).coerceIn(-1f, 1f) * 0.15f
+        if (it != 0f || il != 0f) {
             val w = bmp.width.toFloat()
             val h = bmp.height.toFloat()
-            // Keystone: shift top/bottom (or left/right) edges in opposite directions.
             val srcPts = floatArrayOf(0f, 0f, w, 0f, 0f, h, w, h)
-            val dstPts = floatArrayOf(
-                w * kh, h * kv,
-                w - w * kh, h * kv,
-                0f + w * kh * -1f + w * 0f, h - h * kv,
-                w, h - h * kv
+            // Pure vertical (il=0): top edge narrows, bottom fixed. Pure horizontal
+            // (it=0): left edge tilts, right edge fixed.
+            val dst = floatArrayOf(
+                w * it, h * il,
+                w - w * it, 0f,
+                0f, h - h * il,
+                w, h
             )
-            // Horizontal keystone pivots left/right edges instead when dominant.
-            val dst = if (abs(kh) >= abs(kv)) {
-                floatArrayOf(
-                    0f, h * kv, w, h * kv * -1f + 0f,
-                    0f, h - h * kv, w, h + h * kv
-                )
-            } else {
-                dstPts
-            }
             val m = Matrix()
             if (!m.setPolyToPoly(srcPts, 0, dst, 0, 4)) return bmp
             val warped = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
