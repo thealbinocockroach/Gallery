@@ -52,8 +52,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -91,6 +89,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -99,6 +98,7 @@ import com.example.data.FontItem
 import com.example.ui.components.NeoBadge
 import com.example.ui.components.NeoButton
 import com.example.ui.components.NeoIconButton
+import com.example.ui.components.NeoSlider
 import com.example.ui.theme.FontHelper
 import com.example.ui.theme.NeoBg
 import com.example.ui.theme.NeoBlue
@@ -301,12 +301,13 @@ fun PhotoEditorScreen(
             )
         }
 
-        // Top Action Bar: Close, Title, Undo, Save
+        // Top Action Bar, two rows so nothing can overlap on narrow screens:
+        // row 1 = navigation + title + undo/redo, row 2 = reset + save actions.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             NeoIconButton(
@@ -314,59 +315,69 @@ fun PhotoEditorScreen(
                 contentDescription = "Cancel",
                 onClick = onClose,
                 backgroundColor = NeoWhite,
+                size = 34.dp,
                 testTag = "editor_btn_close"
             )
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                NeoBadge(
-                    text = "STUDIO",
-                    backgroundColor = NeoYellow,
-                    textColor = NeoDark
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "EDIT PHOTO",
-                    fontWeight = FontWeight.Black,
-                    fontSize = 15.sp,
-                    color = NeoDark
-                )
-            }
+            NeoBadge(
+                text = "STUDIO",
+                backgroundColor = NeoYellow,
+                textColor = NeoDark
+            )
+            Text(
+                text = "EDIT PHOTO",
+                fontWeight = FontWeight.Black,
+                fontSize = 14.sp,
+                color = NeoDark,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                NeoIconButton(
-                    icon = Icons.AutoMirrored.Filled.Undo,
-                    contentDescription = "Undo",
-                    onClick = onUndo,
-                    backgroundColor = if (canUndo) NeoWhite else NeoBg,
-                    tint = if (canUndo) NeoDark else Color.LightGray,
-                    size = 38.dp,
-                    shadowOffset = 2.dp,
-                    testTag = "editor_btn_undo"
-                )
-                NeoIconButton(
-                    icon = Icons.AutoMirrored.Filled.Redo,
-                    contentDescription = "Redo",
-                    onClick = onRedo,
-                    backgroundColor = if (canRedo) NeoWhite else NeoBg,
-                    tint = if (canRedo) NeoDark else Color.LightGray,
-                    size = 38.dp,
-                    shadowOffset = 2.dp,
-                    testTag = "editor_btn_redo"
-                )
-                NeoBadge(
-                    text = "RESET ALL",
-                    backgroundColor = NeoPink,
-                    textColor = NeoWhite,
-                    modifier = Modifier.clickable(onClick = onResetAllEditor)
-                )
-                NeoButton(
-                    text = "SAVE",
-                    onClick = { showSaveDialog = true },
-                    containerColor = NeoMint,
-                    leadingIcon = Icons.Default.Save,
-                    testTag = "editor_btn_save"
-                )
-            }
+            NeoIconButton(
+                icon = Icons.AutoMirrored.Filled.Undo,
+                contentDescription = "Undo",
+                onClick = onUndo,
+                backgroundColor = if (canUndo) NeoWhite else NeoBg,
+                tint = if (canUndo) NeoDark else Color.LightGray,
+                size = 34.dp,
+                shadowOffset = 2.dp,
+                testTag = "editor_btn_undo"
+            )
+            NeoIconButton(
+                icon = Icons.AutoMirrored.Filled.Redo,
+                contentDescription = "Redo",
+                onClick = onRedo,
+                backgroundColor = if (canRedo) NeoWhite else NeoBg,
+                tint = if (canRedo) NeoDark else Color.LightGray,
+                size = 34.dp,
+                shadowOffset = 2.dp,
+                testTag = "editor_btn_redo"
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            NeoButton(
+                text = "RESET ALL",
+                onClick = onResetAllEditor,
+                containerColor = NeoPink,
+                contentColor = NeoWhite,
+                modifier = Modifier.weight(1f),
+                testTag = "editor_btn_reset_all"
+            )
+            NeoButton(
+                text = "SAVE",
+                onClick = { showSaveDialog = true },
+                containerColor = NeoMint,
+                leadingIcon = Icons.Default.Save,
+                modifier = Modifier.weight(1f),
+                testTag = "editor_btn_save"
+            )
         }
 
         // Live Photo Preview Box
@@ -771,12 +782,11 @@ fun PhotoEditorScreen(
                             // Filter Strength 0..100%
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("STRENGTH", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                Slider(
+                                NeoSlider(
                                     value = filterStrength,
                                     onValueChange = { filterStrength = it; onFilterStrengthChange(it) },
                                     valueRange = 0f..1f,
                                     modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                    colors = SliderDefaults.colors(thumbColor = NeoYellow, activeTrackColor = NeoDark)
                                 )
                                 Text("${(filterStrength * 100).toInt()}%", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
                             }
@@ -824,12 +834,11 @@ fun PhotoEditorScreen(
                                     // Level/Angle straightening slider
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text("LEVEL", fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                        Slider(
+                                        NeoSlider(
                                             value = editorState.levelAngle,
                                             onValueChange = onLevelAngleChange,
                                             valueRange = -45f..45f,
                                             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                            colors = SliderDefaults.colors(thumbColor = NeoYellow, activeTrackColor = NeoDark)
                                         )
                                         Text("${editorState.levelAngle.toInt()}°", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
                                     }
@@ -837,23 +846,21 @@ fun PhotoEditorScreen(
                                     // Keystone correction sliders (baked on export)
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text("PERSP-H", fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                        Slider(
+                                        NeoSlider(
                                             value = editorState.perspectiveHorizontal,
                                             onValueChange = onPerspectiveHChange,
                                             valueRange = -45f..45f,
                                             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                            colors = SliderDefaults.colors(thumbColor = NeoYellow, activeTrackColor = NeoDark)
                                         )
                                         Text("${editorState.perspectiveHorizontal.toInt()}°", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
                                     }
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text("PERSP-V", fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                        Slider(
+                                        NeoSlider(
                                             value = editorState.perspectiveVertical,
                                             onValueChange = onPerspectiveVChange,
                                             valueRange = -45f..45f,
                                             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                            colors = SliderDefaults.colors(thumbColor = NeoYellow, activeTrackColor = NeoDark)
                                         )
                                         Text("${editorState.perspectiveVertical.toInt()}°", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
                                     }
@@ -1015,34 +1022,31 @@ fun PhotoEditorScreen(
                                     val hslBase = hslChannel * 3
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text("HUE", fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                        Slider(
+                                        NeoSlider(
                                             value = editorState.hsl[hslBase],
                                             onValueChange = { onHslChange(hslChannel, it, editorState.hsl[hslBase + 1], editorState.hsl[hslBase + 2]) },
                                             valueRange = -180f..180f,
                                             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                            colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                         )
                                         Text("${editorState.hsl[hslBase].toInt()}°", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(44.dp))
                                     }
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text("SAT", fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                        Slider(
+                                        NeoSlider(
                                             value = editorState.hsl[hslBase + 1],
                                             onValueChange = { onHslChange(hslChannel, editorState.hsl[hslBase], it, editorState.hsl[hslBase + 2]) },
                                             valueRange = -100f..100f,
                                             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                            colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                         )
                                         Text("${editorState.hsl[hslBase + 1].toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(44.dp))
                                     }
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text("LUM", fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                        Slider(
+                                        NeoSlider(
                                             value = editorState.hsl[hslBase + 2],
                                             onValueChange = { onHslChange(hslChannel, editorState.hsl[hslBase], editorState.hsl[hslBase + 1], it) },
                                             valueRange = -100f..100f,
                                             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                            colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                         )
                                         Text("${editorState.hsl[hslBase + 2].toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(44.dp))
                                     }
@@ -1075,12 +1079,11 @@ fun PhotoEditorScreen(
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text("FILTER INTENSITY", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        Slider(
+                                        NeoSlider(
                                             value = filterStrength,
                                             onValueChange = { filterStrength = it; onFilterStrengthChange(it) },
                                             valueRange = 0f..1f,
                                             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                            colors = SliderDefaults.colors(thumbColor = NeoYellow, activeTrackColor = NeoDark)
                                         )
                                         Text("${(filterStrength * 100).toInt()}%", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
                                     }
@@ -1149,12 +1152,11 @@ fun PhotoEditorScreen(
 
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("STROKE", fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                    Slider(
+                                    NeoSlider(
                                         value = brushStrokeWidth,
                                         onValueChange = { brushStrokeWidth = it },
                                         valueRange = 3f..24f,
                                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                     )
                                 }
 
@@ -1163,12 +1165,11 @@ fun PhotoEditorScreen(
                                 // Brush opacity
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("OPACITY", fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                    Slider(
+                                    NeoSlider(
                                         value = brushAlpha,
                                         onValueChange = { brushAlpha = it },
                                         valueRange = 0.1f..1f,
                                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                     )
                                     Text("${(brushAlpha * 100).toInt()}%", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
                                 }
@@ -1186,7 +1187,7 @@ fun PhotoEditorScreen(
                                             .background(selectedBrushColor, RectangleShape)
                                             .border(1.5.dp, NeoBorder, RectangleShape)
                                     )
-                                    Slider(
+                                    NeoSlider(
                                         value = brushHue,
                                         onValueChange = {
                                             brushHue = it
@@ -1196,7 +1197,6 @@ fun PhotoEditorScreen(
                                         },
                                         valueRange = 0f..360f,
                                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                     )
                                     OutlinedTextField(
                                         value = brushHex,
@@ -1317,12 +1317,11 @@ fun PhotoEditorScreen(
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text("RADIUS", fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                        Slider(
+                                        NeoSlider(
                                             value = retouchRadius,
                                             onValueChange = { retouchRadius = it },
                                             valueRange = 12f..120f,
                                             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                            colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                         )
                                         Text("${retouchRadius.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(32.dp))
                                     }
@@ -1330,12 +1329,11 @@ fun PhotoEditorScreen(
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("STRENGTH", fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                    Slider(
+                                    NeoSlider(
                                         value = retouchStrength,
                                         onValueChange = { retouchStrength = it },
                                         valueRange = 0f..1f,
                                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                     )
                                     Text("${(retouchStrength * 100).toInt()}%", fontSize = 11.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(40.dp))
                                 }
@@ -1431,12 +1429,11 @@ fun PhotoEditorScreen(
                                 // Font size
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("SIZE", fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                    Slider(
+                                    NeoSlider(
                                         value = fontSizeSp,
                                         onValueChange = { fontSizeSp = it },
                                         valueRange = 14f..72f,
                                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                     )
                                     Text(
                                         text = "${fontSizeSp.toInt()}",
@@ -1515,7 +1512,7 @@ fun PhotoEditorScreen(
                                             .background(selectedTextColor, RectangleShape)
                                             .border(1.5.dp, NeoBorder, RectangleShape)
                                     )
-                                    Slider(
+                                    NeoSlider(
                                         value = hueDeg,
                                         onValueChange = {
                                             hueDeg = it
@@ -1525,7 +1522,6 @@ fun PhotoEditorScreen(
                                         },
                                         valueRange = 0f..360f,
                                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                     )
                                     OutlinedTextField(
                                         value = hexInput,
@@ -1570,13 +1566,12 @@ fun PhotoEditorScreen(
                                             uncheckedTrackColor = NeoBorder
                                         )
                                     )
-                                    Slider(
+                                    NeoSlider(
                                         value = badgeAlpha,
                                         onValueChange = { badgeAlpha = it },
                                         valueRange = 0f..1f,
                                         enabled = hasBackgroundBadge,
                                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                     )
                                     Text(
                                         text = "${(badgeAlpha * 100).toInt()}%",
@@ -1643,12 +1638,11 @@ fun PhotoEditorScreen(
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("SIZE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    Slider(
+                                    NeoSlider(
                                         value = shapeStrokeWidth,
                                         onValueChange = { shapeStrokeWidth = it },
                                         valueRange = 2f..12f,
                                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                                        colors = SliderDefaults.colors(thumbColor = NeoDark, activeTrackColor = NeoDark)
                                     )
                                     Text("${shapeStrokeWidth.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Black)
                                 }
@@ -2011,15 +2005,11 @@ private fun AdjustSliderRow(
             fontWeight = FontWeight.Black,
             modifier = Modifier.width(110.dp)
         )
-        Slider(
+        NeoSlider(
             value = value,
             onValueChange = onValueChange,
             valueRange = -100f..100f,
-            modifier = Modifier.weight(1f),
-            colors = SliderDefaults.colors(
-                thumbColor = NeoYellow,
-                activeTrackColor = NeoDark
-            )
+            modifier = Modifier.weight(1f)
         )
     }
 }
