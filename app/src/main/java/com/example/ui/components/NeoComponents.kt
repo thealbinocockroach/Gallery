@@ -112,6 +112,8 @@ fun NeoButton(
         label = "btn_press"
     )
 
+    // Center content so the offset shadow always underlies the full tappable area —
+    // without this, stretched buttons (weight/fillMaxWidth) expose raw shadow bands.
     Box(
         modifier = modifier
             .testTag(testTag)
@@ -119,7 +121,8 @@ fun NeoButton(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onClick
-            )
+            ),
+        contentAlignment = Alignment.Center
     ) {
         // Shadow
         Box(

@@ -6,6 +6,8 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -52,6 +54,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -395,17 +398,79 @@ fun MediaViewerScreen(
                         .crossfade(false)
                         .build()
                 }
+                // Missing-file placeholder: stale rows (file deleted outside the app)
+                // render an explicit notice instead of a black void. Next sync prunes them.
+                var loadFailed by remember(currentItem.id, currentItem.uri) { mutableStateOf(false) }
+                // System-thumbnail fallback: if Coil can't decode the full file, fall back
+                // to the OS thumbnail path (same decoder the grids use) at screen size.
+                var fallbackBitmap by remember(currentItem.id, currentItem.uri) { mutableStateOf<android.graphics.Bitmap?>(null) }
+                var fallbackDone by remember(currentItem.id, currentItem.uri) { mutableStateOf(false) }
+                LaunchedEffect(loadFailed, currentItem.id, currentItem.uri) {
+                    if (loadFailed && !fallbackDone) {
+                        fallbackBitmap = com.example.data.ThumbnailCache.get(
+                            uri = currentItem.uri,
+                            isVideo = currentItem.isVideo,
+                            size = 1280
+                        )
+                        fallbackDone = true
+                    }
+                }
+                val fallbackImage = remember(fallbackBitmap) { fallbackBitmap?.asImageBitmap() }
+                if (fallbackImage != null) {
+                    Image(
+                        bitmap = fallbackImage,
+                        contentDescription = currentItem.title,
+                        contentScale = ContentScale.Fit,
+                        colorFilter = FilterHelper.getColorFilter(currentItem.filterName),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer(
+                                scaleX = if (currentItem.flipHorizontal) -1f else 1f,
+                                scaleY = if (currentItem.flipVertical) -1f else 1f
+                            )
+                    )
+                }
                 AsyncImage(
                     model = request,
                     contentDescription = currentItem.title,
                     contentScale = ContentScale.Fit,
                     colorFilter = FilterHelper.getColorFilter(currentItem.filterName),
+                    onError = { loadFailed = true },
+                    onSuccess = { loadFailed = false },
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer(
                             scaleX = if (currentItem.flipHorizontal) -1f else 1f,
-                            scaleY = if (currentItem.flipVertical) -1f else 1f
+                            scaleY = if (currentItem.flipVertical) -1f else 1f,
+                            alpha = if (fallbackImage != null && loadFailed) 0f else 1f
                         ))
+                if (loadFailed && fallbackDone && fallbackImage == null) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.PhotoLibrary,
+                            contentDescription = null,
+                            tint = Color.LightGray,
+                            modifier = Modifier.size(56.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "FILE MISSING",
+                            color = Color.White,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 16.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "This photo was deleted outside the gallery",
+                            color = Color.LightGray,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
             }
 
             // Liking Heart animation lives on the Favorite button (not over the media).

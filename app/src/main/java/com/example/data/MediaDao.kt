@@ -69,6 +69,12 @@ interface MediaDao {
     @Query("DELETE FROM media_items WHERE isInTrash = 1")
     suspend fun emptyTrash()
 
+    @Query("SELECT * FROM media_items WHERE isInTrash = 1 AND trashTimestamp < :cutoff")
+    suspend fun getExpiredTrash(cutoff: Long): List<MediaItem>
+
+    @Query("DELETE FROM media_items WHERE isInTrash = 1 AND trashTimestamp < :cutoff")
+    suspend fun purgeExpiredTrash(cutoff: Long)
+
     @Query("UPDATE media_items SET isFavorite = :isFavorite WHERE id = :id")
     suspend fun toggleFavorite(id: Long, isFavorite: Boolean)
 

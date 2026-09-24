@@ -56,6 +56,32 @@ class GalleryRepository(private val mediaDao: MediaDao) {
             mediaDao.updateMediaList(changed)
         }
 
+        // Prune rows whose backing files vanished from the device (deleted outside
+        // the app): without this they linger as black tiles/viewer screens served
+        // by stale cached thumbnails. Trashed rows are pruned too — restoring a
+        // file that no longer exists is useless. Guard: never prune when the scan
+        // itself came back empty (permission revoked / storage unmounted).
+        if (deviceItems.isNotEmpty()) {
+            val deviceUris = deviceItems.map { it.uri }.toHashSet()
+            val staleIds = ArrayList<Long>()
+            existingItems.forEach { old ->
+                if (old.uri in deviceUris) return@forEach
+                val parsed = Uri.parse(old.uri)
+                val gone = when (parsed.scheme) {
+                    "file" -> !(parsed.path?.let { File(it).exists() } ?: false)
+                    "content" -> true // Absent from a healthy scan = file is gone.
+                    else -> false
+                }
+                if (gone) {
+                    staleIds.add(old.id)
+                    ThumbnailCache.remove(old.uri)
+                }
+            }
+            if (staleIds.isNotEmpty()) {
+                mediaDao.deleteMediaByIds(staleIds)
+            }
+        }
+
         // Ensure an album row exists for every folder seen on the device.
         val albumNames = deviceItems.map { it.albumName }.filter { it.isNotBlank() }.distinct()
         albumNames.forEach { name ->
@@ -182,6 +208,21 @@ class GalleryRepository(private val mediaDao: MediaDao) {
             ThumbnailCache.remove(item.uri)
         }
         mediaDao.emptyTrash()
+    }
+
+    /**
+     * 30-day recycle-bin retention: permanently drops rows (and their files)
+     * trashed longer than [maxAgeMs]. Called on every media sync.
+     */
+    suspend fun purgeExpiredTrash(context: Context, maxAgeMs: Long): Int {
+        val cutoff = System.currentTimeMillis() - maxAgeMs
+        val expired = mediaDao.getExpiredTrash(cutoff)
+        expired.forEach { item ->
+            deleteBackingFile(context, item.uri)
+            ThumbnailCache.remove(item.uri)
+        }
+        mediaDao.purgeExpiredTrash(cutoff)
+        return expired.size
     }
 
     private fun deleteBackingFile(context: Context, uriString: String) {

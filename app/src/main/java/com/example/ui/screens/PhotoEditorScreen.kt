@@ -319,11 +319,6 @@ fun PhotoEditorScreen(
                 testTag = "editor_btn_close"
             )
 
-            NeoBadge(
-                text = "STUDIO",
-                backgroundColor = NeoYellow,
-                textColor = NeoDark
-            )
             Text(
                 text = "EDIT PHOTO",
                 fontWeight = FontWeight.Black,
@@ -331,7 +326,9 @@ fun PhotoEditorScreen(
                 color = NeoDark,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 8.dp)
             )
 
             NeoIconButton(
@@ -395,14 +392,18 @@ fun PhotoEditorScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .onSizeChanged { previewBoxSize = it }
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onPress = {
-                                pressComparing = true
-                                tryAwaitRelease()
-                                pressComparing = false
-                            }
-                        )
+                    .pointerInput(editorState.activeTool) {
+                        // Hold-to-compare only on non-drawing tools — on DOODLE/SHAPES/
+                        // TEXT/RETOUCH/CROP every touch is a gesture, never a "hold".
+                        if (editorState.activeTool in listOf("FILTERS", "ADJUST", "DETAIL")) {
+                            detectTapGestures(
+                                onPress = {
+                                    pressComparing = true
+                                    tryAwaitRelease()
+                                    pressComparing = false
+                                }
+                            )
+                        }
                     }
                     .graphicsLayer(
                         rotationZ = editorState.rotation + editorState.levelAngle,
@@ -412,12 +413,27 @@ fun PhotoEditorScreen(
                 contentAlignment = Alignment.Center
             ) {
                 // Main Photo: base original while comparing, CPU-rendered spatial preview
-                // when available, otherwise GPU ColorMatrix path.
+                // when available, otherwise GPU ColorMatrix path. If Coil fails, fall back
+                // to the OS thumbnail path (same decoder the grids use) instead of black.
+                var baseLoadFailed by remember(media.uri) { mutableStateOf(false) }
+                var baseFallback by remember(media.uri) { mutableStateOf<android.graphics.Bitmap?>(null) }
+                androidx.compose.runtime.LaunchedEffect(baseLoadFailed, media.uri) {
+                    if (baseLoadFailed && baseFallback == null) {
+                        baseFallback = com.example.data.ThumbnailCache.get(
+                            uri = media.uri,
+                            isVideo = media.isVideo,
+                            size = 1280
+                        )
+                    }
+                }
+                val baseFallbackImage = remember(baseFallback) { baseFallback?.asImageBitmap() }
                 if (isComparing) {
                     AsyncImage(
                         model = editorImageRequest,
                         contentDescription = media.title,
                         contentScale = ContentScale.Fit,
+                        onError = { baseLoadFailed = true },
+                        onSuccess = { baseLoadFailed = false },
                         modifier = Modifier.fillMaxSize()
                     )
                 } else if (spatialImageBitmap != null) {
@@ -446,6 +462,17 @@ fun PhotoEditorScreen(
                             editorState.vibrance,
                             editorState.filterStrength
                         ),
+                        onError = { baseLoadFailed = true },
+                        onSuccess = { baseLoadFailed = false },
+                        modifier = Modifier.fillMaxSize(),
+                        alpha = if (baseFallbackImage != null && baseLoadFailed) 0f else 1f
+                    )
+                }
+                if (baseFallbackImage != null && baseLoadFailed && !isComparing && spatialImageBitmap == null) {
+                    Image(
+                        bitmap = baseFallbackImage,
+                        contentDescription = media.title,
+                        contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -745,7 +772,7 @@ fun PhotoEditorScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(if (editorState.activeTool in listOf("TEXT", "SHAPES", "DETAIL", "RETOUCH", "CROP")) 208.dp else 115.dp)
+                        .height(if (editorState.activeTool in listOf("TEXT", "SHAPES", "DETAIL", "RETOUCH", "CROP", "DOODLE")) 208.dp else 115.dp)
                         .padding(horizontal = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -1106,7 +1133,11 @@ fun PhotoEditorScreen(
                             }
 
                         "DOODLE" -> {
-                            Column(modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState())
+                            ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
