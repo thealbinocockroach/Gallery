@@ -6,8 +6,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
@@ -21,6 +21,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.graphics.RectangleShape
@@ -112,8 +113,9 @@ fun NeoButton(
         label = "btn_press"
     )
 
-    // Center content so the offset shadow always underlies the full tappable area —
-    // without this, stretched buttons (weight/fillMaxWidth) expose raw shadow bands.
+    // The pill (foreground + shadow) sizes to its content and centers in the tap
+    // area, so stretched buttons (weight/fillMaxWidth) keep a tight theme shadow
+    // instead of a full-bleed black slab.
     Box(
         modifier = modifier
             .testTag(testTag)
@@ -124,41 +126,43 @@ fun NeoButton(
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Shadow
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .offset(x = shadowOffset, y = shadowOffset)
-                .background(NeoDark, RectangleShape)
-                .border(2.5.dp, borderColor, RectangleShape)
-        )
-        // Foreground button
-        Box(
-            modifier = Modifier
-                .offset(x = pressedOffset, y = pressedOffset)
-                .background(containerColor, RectangleShape)
-                .border(2.5.dp, borderColor, RectangleShape)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (leadingIcon != null) {
-                    Icon(
-                        imageVector = leadingIcon,
-                        contentDescription = null,
-                        tint = contentColor,
-                        modifier = Modifier
-                            .size(20.dp)
-                            .padding(end = 6.dp)
+        Box(contentAlignment = Alignment.Center) {
+            // Shadow sized to the pill (matchParentSize of this wrap-content box).
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .offset(x = shadowOffset, y = shadowOffset)
+                    .background(NeoDark, RectangleShape)
+                    .border(2.5.dp, borderColor, RectangleShape)
+            )
+            // Foreground button
+            Box(
+                modifier = Modifier
+                    .offset(x = pressedOffset, y = pressedOffset)
+                    .background(containerColor, RectangleShape)
+                    .border(2.5.dp, borderColor, RectangleShape)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (leadingIcon != null) {
+                        Icon(
+                            imageVector = leadingIcon,
+                            contentDescription = null,
+                            tint = contentColor,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .padding(end = 6.dp)
+                        )
+                    }
+                    Text(
+                        text = text.uppercase(),
+                        color = contentColor,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 0.5.sp
                     )
                 }
-                Text(
-                    text = text.uppercase(),
-                    color = contentColor,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 0.5.sp
-                )
             }
         }
     }
@@ -263,19 +267,23 @@ fun NeoSlider(
             .then(if (testTag.isNotBlank()) Modifier.testTag(testTag) else Modifier)
             .pointerInput(valueRange, enabled) {
                 if (!enabled) return@pointerInput
-                detectDragGestures(
-                    onDragStart = { offset -> setFromX(offset.x) },
-                    onDrag = { change, _ ->
-                        change.consume()
-                        setFromX(change.position.x)
+                // Single gesture loop for tap + drag: two competing detectors on one
+                // element starve each other, which left sliders dead on device.
+                // Value applies on down (tap jumps) and tracks the finger on drag.
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    setFromX(down.position.x)
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val changes = event.changes
+                        if (changes.all { !it.pressed }) break
+                        val change = changes.firstOrNull() ?: break
+                        if (change.positionChange() != Offset.Zero) {
+                            change.consume()
+                            setFromX(change.position.x)
+                        }
                     }
-                )
-            }
-            .pointerInput(valueRange, enabled) {
-                if (!enabled) return@pointerInput
-                detectTapGestures(
-                    onTap = { offset -> setFromX(offset.x) }
-                )
+                }
             }
     ) {
         val trackH = 10.dp.toPx()
