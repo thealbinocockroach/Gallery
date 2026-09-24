@@ -1342,8 +1342,50 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /**
+     * Working bitmap for the embedded library canvas: tone + spatial baked at
+     * display size, but NO geometry (preview layer handles it) and NO markup
+     * (brush/text/emoji live as library overlays). Null when the photo is
+     * pristine — then the lib source stays transparent over the base image.
+     */
+    suspend fun renderWorkingBitmap(maxDim: Int = 1080): Bitmap? {
+        val state = _editorState.value
+        if (state.mediaItem == null || !editorHasPixelWork()) return null
+        return try {
+            renderFinalBitmap(getApplication(), state, maxDim, bakeGeometry = false, bakeMarkup = false)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** True when tone/spatial work exists (lib source needs a baked working bitmap). */
+    fun editorHasPixelWork(): Boolean {
+        val s = _editorState.value
+        if (s.selectedFilter != "Normal") return true
+        if (s.brightness != 0f || s.contrast != 0f || s.saturation != 0f || s.warmth != 0f) return true
+        if (s.tint != 0f || s.vibrance != 0f || s.highlights != 0f || s.shadows != 0f) return true
+        if (s.whites != 0f || s.blacks != 0f) return true
+        if (s.filterStrength != 1f) return true
+        return needsSpatialRender(s)
+    }
+
     /** True when the preview should use the downscaled CPU render (spatial/tone extras). */
     fun editorNeedsSpatialPreview(): Boolean = needsSpatialRender(_editorState.value)
+
+    /**
+     * Full-resolution working bitmap for export handoff to the embedded library
+     * canvas: tone + spatial baked, no geometry (baked later), no markup (the
+     * library overlays brush/text/emoji itself before capture).
+     */
+    suspend fun renderFullWorkingBitmap(): Bitmap? {
+        val state = _editorState.value
+        if (state.mediaItem == null) return null
+        return try {
+            renderFinalBitmap(getApplication(), state, 8192, bakeGeometry = false, bakeMarkup = false)
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     private fun needsSpatialRender(state: EditorState): Boolean {
         if (state.sharpness != 0f || state.clarity != 0f || state.denoise != 0f) return true
@@ -1359,15 +1401,20 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun renderFinalBitmap(
         context: android.content.Context,
         state: EditorState,
-        maxDim: Int
+        maxDim: Int,
+        bakeGeometry: Boolean = true,
+        bakeMarkup: Boolean = true
     ): Bitmap? = withContext(Dispatchers.IO) {
         try {
             val original = state.mediaItem ?: return@withContext null
             var bmp = decodeSampledBitmap(context, original.uri, maxDim) ?: return@withContext null
             // 1. Geometric bake: rotation + flips + straighten + perspective.
-            val rotation = ((state.rotation % 360f) + 360f) % 360f
-            bmp = bakeGeometry(bmp, rotation, state.flipH, state.flipV, state.levelAngle,
-                state.perspectiveHorizontal, state.perspectiveVertical)
+            // Skipped for lib-canvas working bitmaps (preview layer handles geometry).
+            if (bakeGeometry) {
+                val rotation = ((state.rotation % 360f) + 360f) % 360f
+                bmp = bakeGeometry(bmp, rotation, state.flipH, state.flipV, state.levelAngle,
+                    state.perspectiveHorizontal, state.perspectiveVertical)
+            }
             // 2. Tone matrix (filter + linear adjustments), GPU-identical math to preview.
             bmp = applyToneMatrix(bmp, state)
             // 3. Single pixel pass: HSL mixer + vignette + clarity (midtone structure).
@@ -1381,17 +1428,20 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             }
             // 6. Tap retouch ops.
             if (state.retouchOps.isNotEmpty()) bmp = applyRetouchOps(bmp, state)
-            // 7. Doodles + shapes + text burn-in.
-            bmp = burnDoodles(bmp, state)
-            bmp = burnShapes(bmp, state)
-            val overlay = state.textOverlay?.takeIf { it.text.isNotBlank() }
-            if (overlay != null) {
-                val composed = renderTextComposition(context, bmp, overlay)
-                if (composed != null) {
-                    if (composed != bmp) {
-                        try { bmp.recycle() } catch (_: Exception) {}
+            // 7. Doodles + shapes + text burn-in (skipped for lib-canvas working
+            // bitmaps — markup lives as library overlays there).
+            if (bakeMarkup) {
+                bmp = burnDoodles(bmp, state)
+                bmp = burnShapes(bmp, state)
+                val overlay = state.textOverlay?.takeIf { it.text.isNotBlank() }
+                if (overlay != null) {
+                    val composed = renderTextComposition(context, bmp, overlay)
+                    if (composed != null) {
+                        if (composed != bmp) {
+                            try { bmp.recycle() } catch (_: Exception) {}
+                        }
+                        bmp = composed
                     }
-                    bmp = composed
                 }
             }
             bmp
@@ -2175,7 +2225,12 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         _editorState.value = _editorState.value.copy(textOverlay = textOverlay)
     }
 
-    fun saveEditedPhoto(asNew: Boolean = true) {
+    /**
+     * @param composed library-captured bitmap (working pixels + brush/text/emoji
+     * markup) when the embedded canvas holds edits; null falls back to the legacy
+     * full render from parametric state.
+     */
+    fun saveEditedPhoto(asNew: Boolean = true, composed: Bitmap? = null) {
         val state = _editorState.value
         val original = state.mediaItem ?: return
 
@@ -2203,7 +2258,30 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             // Falls back to the legacy metadata-only path if rendering fails.
             val context = getApplication<Application>()
             showFeedback("Rendering…")
-            val rendered = renderFinalBitmap(context, state, maxDim = 8192)
+            // Prefer the library composition (working pixels + markup); it still needs
+            // display-geometry baking. Otherwise fall back to the legacy full render.
+            var rendered: Bitmap? = null
+            var renderedOwned = false
+            if (composed != null && composed.width > 0 && composed.height > 0) {
+                val rotation = ((state.rotation % 360f) + 360f) % 360f
+                rendered = try {
+                    bakeGeometry(
+                        composed, rotation, state.flipH, state.flipV,
+                        state.levelAngle, state.perspectiveHorizontal, state.perspectiveVertical
+                    )
+                } catch (_: Exception) {
+                    null
+                }
+                // bakeGeometry recycles the source when it creates a new bitmap.
+                // On bake failure leave composed for GC and fall through to the
+                // legacy render so the photo itself is still saved (minus markup).
+                if (rendered != null) {
+                    renderedOwned = true
+                }
+            }
+            if (rendered == null && !renderedOwned) {
+                rendered = renderFinalBitmap(context, state, maxDim = 8192)
+            }
             if (asNew) {
                 if (rendered != null) {
                     val ext = when (format) {

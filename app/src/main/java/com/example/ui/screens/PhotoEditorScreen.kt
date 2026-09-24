@@ -25,6 +25,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.graphics.RectangleShape
@@ -40,7 +43,11 @@ import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.CropSquare
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FontDownload
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Healing
+import androidx.compose.material.icons.filled.InsertEmoticon
+import androidx.compose.material.icons.filled.PhotoFilter
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
@@ -60,8 +67,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -165,14 +176,15 @@ fun PhotoEditorScreen(
     onSetExportFormat: (String) -> Unit = {},
     onSetExportQuality: (Int) -> Unit = {},
     onSetStripExif: (Boolean) -> Unit = {},
-    needsSpatialPreview: Boolean = false,
+    hasPixelWork: Boolean = false,
     previewRenderer: (suspend (Int) -> android.graphics.Bitmap?)? = null,
     onAddDrawingPath: (DrawingPath) -> Unit,
     onUndoDrawing: () -> Unit,
     onClearDrawing: () -> Unit,
     onTextOverlayChange: (TextOverlay?) -> Unit,
     onInstallCustomFont: (String, String) -> Unit,
-    onSave: (asNew: Boolean) -> Unit,
+    onSaveFull: (asNew: Boolean, composed: android.graphics.Bitmap?) -> Unit,
+    fullWorkingRenderer: (suspend () -> android.graphics.Bitmap?)? = null,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -193,11 +205,11 @@ fun PhotoEditorScreen(
     var newFontName by remember { mutableStateOf("") }
     var newFontCategory by remember { mutableStateOf("Custom Installed") }
 
-    // Doodle tool state
+    // Doodle tool state (strokes live in the embedded library canvas)
     var selectedBrushColor by remember { mutableStateOf(NeoYellow) }
     var brushStrokeWidth by remember { mutableFloatStateOf(8f) }
     var brushAlpha by remember { mutableFloatStateOf(1f) }
-    var currentDoodlePoints by remember { mutableStateOf<List<Pair<Float, Float>>>(emptyList()) }
+    var eraserOn by remember { mutableStateOf(false) }
     // Retouch tap handler is configured by the RETOUCH panel below (mode/radius/strength).
     var retouchTapHandler by remember { mutableStateOf<((Float, Float) -> Unit)>({ _, _ -> }) }
 
@@ -208,74 +220,209 @@ fun PhotoEditorScreen(
     var shapePoints by remember { mutableStateOf<List<Pair<Float, Float>>>(emptyList()) }
     var currentShapeType by remember { mutableStateOf(ShapeType.RECT) }
 
+    // Text tool state (committed to the embedded canvas via ADD/UPDATE TEXT)
+    var editingTextString by remember { mutableStateOf("") }
+    var selectedFontId by remember { mutableStateOf("font_neo_black") }
+    var fontSizeSp by remember { mutableFloatStateOf(26f) }
+    var selectedTextColor by remember { mutableStateOf(NeoDark) }
+    var selectedBadgeColor by remember { mutableStateOf(NeoYellow) }
+    var hasBackgroundBadge by remember { mutableStateOf(true) }
+    var selectedTextAlign by remember { mutableStateOf("CENTER") }
+    var badgeAlpha by remember { mutableFloatStateOf(1f) }
+
     // Compare / Filter Strength
     var showCompare by remember { mutableStateOf(editorState.showCompare) }
     // Hold-to-compare: press-and-hold the preview to peek at the original base image.
     var pressComparing by remember { mutableStateOf(false) }
     val isComparing = showCompare || pressComparing
-    // Downscaled CPU render for spatial effects (sharp/clarity/denoise/vignette/HSL/
-    // bokeh/retouch/level/perspective) so the preview stays WYSIWYG with export.
-    var spatialBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    androidx.compose.runtime.LaunchedEffect(editorState, needsSpatialPreview, isComparing) {
-        if (!needsSpatialPreview || previewRenderer == null || isComparing) {
-            spatialBitmap = null
+    // ---- Embedded burhanrashid52 PhotoEditor: transparent markup canvas (brush,
+    // text, emoji, shapes with native move/scale) layered over our own preview.
+    // Our tone/spatial pipeline feeds its source via workingBitmap below.
+    var libEditor by remember { mutableStateOf<ja.burhanrashid52.photoeditor.PhotoEditor?>(null) }
+    var libView by remember { mutableStateOf<ja.burhanrashid52.photoeditor.PhotoEditorView?>(null) }
+    var libCanUndo by remember { mutableStateOf(false) }
+    var libCanRedo by remember { mutableStateOf(false) }
+    fun syncLibUndo() {
+        libCanUndo = libEditor?.isUndoAvailable == true
+        libCanRedo = libEditor?.isRedoAvailable == true
+    }
+    var pendingTextEditView by remember { mutableStateOf<android.view.View?>(null) }
+    val scope = rememberCoroutineScope()
+    var workingRefreshTick by remember { mutableStateOf(0) }
+    // Working bitmap (tone + spatial baked, no geometry/markup) shown through the
+    // lib source. Null when pristine — then the lib stays transparent over base.
+    var workingBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    androidx.compose.runtime.LaunchedEffect(editorState, hasPixelWork, isComparing, media.uri, workingRefreshTick) {
+        if (isComparing || previewRenderer == null || !hasPixelWork) {
+            if (!hasPixelWork) {
+                workingBitmap = null
+                libView?.source?.setImageDrawable(null)
+            }
             return@LaunchedEffect
         }
-        kotlinx.coroutines.delay(150)
-        spatialBitmap = previewRenderer(1080)
-    }
-    val spatialImageBitmap = remember(spatialBitmap) { spatialBitmap?.asImageBitmap() }
-    var filterStrength by remember { mutableFloatStateOf(editorState.filterStrength) }
-
-    // Text tool state — now fully draggable anywhere on the image
-    var editingTextString by remember { mutableStateOf(editorState.textOverlay?.text ?: "") }
-    var selectedFontId by remember { mutableStateOf(editorState.textOverlay?.fontId ?: "font_neo_black") }
-    var fontSizeSp by remember { mutableFloatStateOf(editorState.textOverlay?.fontSizeSp ?: 26f) }
-    var selectedTextColor by remember { mutableStateOf(NeoDark) }
-    var selectedBadgeColor by remember { mutableStateOf(NeoYellow) }
-    var hasBackgroundBadge by remember { mutableStateOf(true) }
-    var selectedTextAlign by remember { mutableStateOf(editorState.textOverlay?.textAlign ?: "CENTER") }
-    var badgeAlpha by remember { mutableFloatStateOf(editorState.textOverlay?.badgeAlpha ?: 1f) }
-    var textDragOffset by remember { mutableStateOf(Offset.Zero) }
-    var previewBoxSize by remember { mutableStateOf(IntSize.Zero) }
-    // Sync initial drag offset from stored normalized position (once)
-    androidx.compose.runtime.LaunchedEffect(editorState.textOverlay) {
-        editorState.textOverlay?.let {
-            if (previewBoxSize.width > 0 && previewBoxSize.height > 0) {
-                textDragOffset = Offset(
-                    x = (it.xOffsetNorm - 0.5f) * previewBoxSize.width,
-                    y = (it.yOffsetNorm - 0.5f) * previewBoxSize.height
-                )
+        kotlinx.coroutines.delay(250)
+        workingBitmap = previewRenderer(1080)
+        val view = libView
+        if (view != null) {
+            if (workingBitmap != null) {
+                view.source.setImageBitmap(workingBitmap)
+            } else {
+                view.source.setImageDrawable(null)
             }
         }
     }
-    // Push every local text edit (including drag) to ViewModel so Save persists it
-    androidx.compose.runtime.LaunchedEffect(editingTextString, selectedFontId, fontSizeSp, selectedTextColor, selectedBadgeColor, hasBackgroundBadge, selectedTextAlign, badgeAlpha, textDragOffset, previewBoxSize) {
-        val anchorW = previewBoxSize.width
-        val anchorH = previewBoxSize.height
-        if (editingTextString.isNotBlank() && previewBoxSize.width > 0) {
-            val normX = (0.5f + textDragOffset.x / previewBoxSize.width).coerceIn(0.05f, 0.95f)
-            val normY = (0.5f + textDragOffset.y / previewBoxSize.height).coerceIn(0.05f, 0.95f)
-            onTextOverlayChange(
-                TextOverlay(
-                    text = editingTextString,
-                    fontId = selectedFontId,
-                    fontSizeSp = fontSizeSp,
-                    textColor = selectedTextColor.value.toLong(),
-                    backgroundColor = selectedBadgeColor.value.toLong(),
-                    hasBackgroundBadge = hasBackgroundBadge,
-                    badgeAlpha = badgeAlpha,
-                    textAlign = selectedTextAlign,
-                    xOffsetNorm = normX,
-                    yOffsetNorm = normY,
-                    anchorW = anchorW,
-                    anchorH = anchorH
+    // Brush drawing only intercepts touches on drawing tools; elsewhere the canvas
+    // must stay transparent to taps (crop/text/retouch gestures live around it).
+    // Keep the library brush config in sync with our panel controls.
+    fun applyLibBrushConfig() {
+        val lib = libEditor ?: return
+        if (editorState.activeTool == "DOODLE") {
+            if (eraserOn) {
+                lib.brushEraser()
+            } else {
+                lib.setShape(
+                    ja.burhanrashid52.photoeditor.shape.ShapeBuilder()
+                        .withShapeType(ja.burhanrashid52.photoeditor.shape.ShapeType.Brush)
+                        .withShapeSize(brushStrokeWidth)
+                        .withShapeOpacity((brushAlpha * 255).toInt().coerceIn(0, 255))
+                        .withShapeColor(selectedBrushColor.toArgb())
                 )
+            }
+            lib.setBrushDrawingMode(true)
+        } else if (editorState.activeTool == "SHAPES" && currentShapeType != ShapeType.HIGHLIGHT) {
+            val libType = when (currentShapeType) {
+                ShapeType.CIRCLE -> ja.burhanrashid52.photoeditor.shape.ShapeType.Oval
+                ShapeType.ARROW -> ja.burhanrashid52.photoeditor.shape.ShapeType.Arrow()
+                else -> ja.burhanrashid52.photoeditor.shape.ShapeType.Rectangle
+            }
+            lib.setShape(
+                ja.burhanrashid52.photoeditor.shape.ShapeBuilder()
+                    .withShapeType(libType)
+                    .withShapeSize(shapeStrokeWidth)
+                    .withShapeOpacity(((0.4f + shapeFillAlpha * 0.6f).coerceIn(0f, 1f) * 255).toInt())
+                    .withShapeColor(selectedShapeColor.toArgb())
             )
-        } else if (editingTextString.isBlank()) {
-            onTextOverlayChange(null)
+            lib.setBrushDrawingMode(true)
+        } else {
+            lib.setBrushDrawingMode(false)
+        }
+        syncLibUndo()
+    }
+    androidx.compose.runtime.LaunchedEffect(
+        editorState.activeTool, currentShapeType, selectedBrushColor,
+        brushStrokeWidth, brushAlpha, eraserOn, selectedShapeColor,
+        shapeStrokeWidth, shapeFillAlpha, libEditor
+    ) {
+        applyLibBrushConfig()
+    }
+    // Fresh media (open, crop result): wipe lib markup, it belongs to the old pixels.
+    androidx.compose.runtime.LaunchedEffect(media.uri) {
+        libEditor?.clearAllViews()
+        pendingTextEditView = null
+        syncLibUndo()
+    }
+
+    /** Best-effort mapping from editor font ids to native typefaces for canvas export. */
+    fun nativeTypefaceFor(fontId: String): android.graphics.Typeface {
+        val family = when (fontId) {
+            "font_editorial_serif" -> android.graphics.Typeface.SERIF
+            "font_retro_mono" -> android.graphics.Typeface.MONOSPACE
+            "font_script_flow", "font_marker_brush" -> android.graphics.Typeface.SANS_SERIF
+            else -> android.graphics.Typeface.SANS_SERIF
+        }
+        val style = when (fontId) {
+            "font_neo_black", "font_bebas_impact" -> android.graphics.Typeface.BOLD
+            "font_editorial_serif", "font_retro_mono" -> android.graphics.Typeface.BOLD
+            "font_script_flow" -> android.graphics.Typeface.ITALIC
+            else -> android.graphics.Typeface.BOLD
+        }
+        return android.graphics.Typeface.create(family, style)
+    }
+
+    // Commit the TEXT panel styling to the embedded canvas (add new or update tapped).
+    fun commitLibText() {
+        val lib = libEditor ?: return
+        val text = editingTextString.trim()
+        if (text.isEmpty()) return
+        val outlineInt = if (selectedTextColor.luminance() > 0.5f) {
+            NeoDark.toArgb()
+        } else {
+            NeoWhite.toArgb()
+        }
+        val badgeInt = selectedBadgeColor.copy(alpha = badgeAlpha).toArgb()
+        val style = ja.burhanrashid52.photoeditor.TextStyleBuilder()
+            .apply {
+                withTextSize(fontSizeSp)
+                withTextColor(selectedTextColor.toArgb())
+                withTextFont(nativeTypefaceFor(selectedFontId))
+                withGravity(
+                    when (selectedTextAlign) {
+                        "LEFT" -> android.view.Gravity.START
+                        "RIGHT" -> android.view.Gravity.END
+                        else -> android.view.Gravity.CENTER
+                    }
+                )
+                withTextShadow(8f, 4f, 4f, 0x99000000.toInt())
+                withTextBorder(
+                    ja.burhanrashid52.photoeditor.TextBorder(
+                        corner = 0f,
+                        backGroundColor = android.graphics.Color.TRANSPARENT,
+                        strokeWidth = 4,
+                        strokeColor = outlineInt
+                    )
+                )
+                if (hasBackgroundBadge) withBackgroundColor(badgeInt)
+            }
+        val pending = pendingTextEditView
+        if (pending != null) {
+            lib.editText(pending, text, style)
+            pendingTextEditView = null
+        } else {
+            lib.addText(text, style)
+        }
+        editingTextString = ""
+        syncLibUndo()
+    }
+
+    // Capture the lib canvas (working pixels + markup) for export. Runs on Main.
+    suspend fun captureComposed(): android.graphics.Bitmap? {
+        val lib = libEditor ?: return null
+        return try {
+            if (lib.isCacheEmpty) null else lib.saveAsBitmap()
+        } catch (_: Exception) {
+            null
         }
     }
+
+    fun doSave(asNew: Boolean, fullWorking: (suspend () -> android.graphics.Bitmap?)?) {
+        scope.launch {
+            showSaveDialog = false
+            var composed: android.graphics.Bitmap? = null
+            try {
+                val lib = libEditor
+                if (lib != null && !lib.isCacheEmpty && fullWorking != null) {
+                    // Full-res working pixels under the markup for full-quality export.
+                    val full = withContext(kotlinx.coroutines.Dispatchers.IO) { fullWorking() }
+                    if (full != null) {
+                        libView?.source?.setImageBitmap(full)
+                        composed = try {
+                            lib.saveAsBitmap()
+                        } catch (_: Exception) {
+                            null
+                        }
+                        try { full.recycle() } catch (_: Exception) {}
+                        // Restore the downscaled preview working bitmap.
+                        workingRefreshTick++
+                    }
+                }
+            } catch (_: Exception) {
+                composed = null
+            }
+            onSaveFull(asNew, composed)
+        }
+    }
+    var filterStrength by remember { mutableFloatStateOf(editorState.filterStrength) }
+    var previewBoxSize by remember { mutableStateOf(IntSize.Zero) }
 
     Column(
         modifier = Modifier
@@ -334,9 +481,16 @@ fun PhotoEditorScreen(
             NeoIconButton(
                 icon = Icons.AutoMirrored.Filled.Undo,
                 contentDescription = "Undo",
-                onClick = onUndo,
-                backgroundColor = if (canUndo) NeoWhite else NeoBg,
-                tint = if (canUndo) NeoDark else Color.LightGray,
+                onClick = {
+                    if (libCanUndo) {
+                        libEditor?.undo()
+                        syncLibUndo()
+                    } else {
+                        onUndo()
+                    }
+                },
+                backgroundColor = if (canUndo || libCanUndo) NeoWhite else NeoBg,
+                tint = if (canUndo || libCanUndo) NeoDark else Color.LightGray,
                 size = 34.dp,
                 shadowOffset = 2.dp,
                 testTag = "editor_btn_undo"
@@ -344,9 +498,16 @@ fun PhotoEditorScreen(
             NeoIconButton(
                 icon = Icons.AutoMirrored.Filled.Redo,
                 contentDescription = "Redo",
-                onClick = onRedo,
-                backgroundColor = if (canRedo) NeoWhite else NeoBg,
-                tint = if (canRedo) NeoDark else Color.LightGray,
+                onClick = {
+                    if (libCanRedo) {
+                        libEditor?.redo()
+                        syncLibUndo()
+                    } else {
+                        onRedo()
+                    }
+                },
+                backgroundColor = if (canRedo || libCanRedo) NeoWhite else NeoBg,
+                tint = if (canRedo || libCanRedo) NeoDark else Color.LightGray,
                 size = 34.dp,
                 shadowOffset = 2.dp,
                 testTag = "editor_btn_redo"
@@ -412,9 +573,9 @@ fun PhotoEditorScreen(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                // Main Photo: base original while comparing, CPU-rendered spatial preview
-                // when available, otherwise GPU ColorMatrix path. If Coil fails, fall back
-                // to the OS thumbnail path (same decoder the grids use) instead of black.
+                // Base photo (plain, always underneath). Tone + spatial come through
+                // the working bitmap fed into the library canvas below. If Coil fails,
+                // fall back to the OS thumbnail path instead of black.
                 var baseLoadFailed by remember(media.uri) { mutableStateOf(false) }
                 var baseFallback by remember(media.uri) { mutableStateOf<android.graphics.Bitmap?>(null) }
                 androidx.compose.runtime.LaunchedEffect(baseLoadFailed, media.uri) {
@@ -427,52 +588,89 @@ fun PhotoEditorScreen(
                     }
                 }
                 val baseFallbackImage = remember(baseFallback) { baseFallback?.asImageBitmap() }
-                if (isComparing) {
-                    AsyncImage(
-                        model = editorImageRequest,
-                        contentDescription = media.title,
-                        contentScale = ContentScale.Fit,
-                        onError = { baseLoadFailed = true },
-                        onSuccess = { baseLoadFailed = false },
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else if (spatialImageBitmap != null) {
-                    Image(
-                        bitmap = spatialImageBitmap,
-                        contentDescription = media.title,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    AsyncImage(
-                        model = editorImageRequest,
-                        contentDescription = media.title,
-                        contentScale = ContentScale.Fit,
-                        colorFilter = FilterHelper.getColorFilter(
-                            editorState.selectedFilter,
-                            editorState.brightness,
-                            editorState.contrast,
-                            editorState.saturation,
-                            editorState.warmth,
-                            editorState.tint,
-                            editorState.highlights,
-                            editorState.shadows,
-                            editorState.whites,
-                            editorState.blacks,
-                            editorState.vibrance,
-                            editorState.filterStrength
-                        ),
-                        onError = { baseLoadFailed = true },
-                        onSuccess = { baseLoadFailed = false },
-                        modifier = Modifier.fillMaxSize(),
-                        alpha = if (baseFallbackImage != null && baseLoadFailed) 0f else 1f
-                    )
-                }
-                if (baseFallbackImage != null && baseLoadFailed && !isComparing && spatialImageBitmap == null) {
+                AsyncImage(
+                    model = editorImageRequest,
+                    contentDescription = media.title,
+                    contentScale = ContentScale.Fit,
+                    onError = { baseLoadFailed = true },
+                    onSuccess = { baseLoadFailed = false },
+                    modifier = Modifier.fillMaxSize(),
+                    alpha = if (baseFallbackImage != null && baseLoadFailed) 0f else 1f
+                )
+                if (baseFallbackImage != null && baseLoadFailed) {
                     Image(
                         bitmap = baseFallbackImage,
                         contentDescription = media.title,
                         contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                // Embedded library markup canvas (brush / text / emoji / shapes with
+                // native move + pinch-scale). Transparent: our photo shows through.
+                // Hidden while comparing so the raw original shows.
+                if (!isComparing) {
+                    androidx.compose.ui.viewinterop.AndroidView(
+                        factory = { ctx ->
+                            ja.burhanrashid52.photoeditor.PhotoEditorView(ctx).apply {
+                                layoutParams = android.view.ViewGroup.LayoutParams(
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                                // Match our Fit mapping so overlays align with the photo.
+                                source.scaleType =
+                                    android.widget.ImageView.ScaleType.FIT_CENTER
+                            }
+                        },
+                        update = { view ->
+                            libView = view
+                            if (libEditor == null) {
+                                libEditor = ja.burhanrashid52.photoeditor.PhotoEditor
+                                    .Builder(context, view)
+                                    .setPinchTextScalable(true)
+                                    .build()
+                                libEditor?.setOnPhotoEditorListener(
+                                    object : ja.burhanrashid52.photoeditor.OnPhotoEditorListener {
+                                        override fun onEditTextChangeListener(
+                                            rootView: android.view.View,
+                                            text: String,
+                                            colorCode: Int
+                                        ) {
+                                            editingTextString = text
+                                            pendingTextEditView = rootView
+                                        }
+
+                                        override fun onAddViewListener(
+                                            viewType: ja.burhanrashid52.photoeditor.ViewType,
+                                            numberOfAddedViews: Int
+                                        ) {
+                                            syncLibUndo()
+                                        }
+
+                                        override fun onRemoveViewListener(
+                                            viewType: ja.burhanrashid52.photoeditor.ViewType,
+                                            numberOfAddedViews: Int
+                                        ) {
+                                            syncLibUndo()
+                                        }
+
+                                        override fun onStartViewChangeListener(
+                                            viewType: ja.burhanrashid52.photoeditor.ViewType
+                                        ) {
+                                        }
+
+                                        override fun onStopViewChangeListener(
+                                            viewType: ja.burhanrashid52.photoeditor.ViewType
+                                        ) {
+                                        }
+
+                                        override fun onTouchSourceImage(event: android.view.MotionEvent) {
+                                        }
+                                    }
+                                )
+                                syncLibUndo()
+                            }
+                        },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -495,40 +693,16 @@ fun PhotoEditorScreen(
                     )
                 }
 
-                // Doodles + Shapes Canvas (hidden while comparing with the original)
+                // Highlight-only overlay Canvas (brush / rect / oval / line / arrow live
+                // in the embedded library canvas). Hidden while comparing.
                 Canvas(
                     modifier = Modifier
                         .fillMaxSize()
                         .pointerInput(
-                            editorState.activeTool, selectedBrushColor, brushStrokeWidth,
-                            brushAlpha, currentShapeType, retouchTapHandler
+                            editorState.activeTool, currentShapeType, retouchTapHandler
                         ) {
-                            if (editorState.activeTool == "DOODLE") {
-                                detectDragGestures(
-                                    onDragStart = { offset ->
-                                        currentDoodlePoints = listOf(offset.x to offset.y)
-                                    },
-                                    onDrag = { change, _ ->
-                                        change.consume()
-                                        currentDoodlePoints = currentDoodlePoints + (change.position.x to change.position.y)
-                                    },
-                                    onDragEnd = {
-                                        if (currentDoodlePoints.size > 1) {
-                                            onAddDrawingPath(
-                                                DrawingPath(
-                                                    points = currentDoodlePoints,
-                                                    color = selectedBrushColor.copy(alpha = brushAlpha).value.toLong(),
-                                                    strokeWidth = brushStrokeWidth,
-                                                    anchorW = previewBoxSize.width,
-                                                    anchorH = previewBoxSize.height
-                                                )
-                                            )
-                                        }
-                                        currentDoodlePoints = emptyList()
-                                    }
-                                )
-                            } else if (editorState.activeTool == "SHAPES") {
-                                // Drag defines the shape bounds; DRAW SHAPE commits it.
+                            if (editorState.activeTool == "SHAPES" && currentShapeType == ShapeType.HIGHLIGHT) {
+                                // Drag defines the highlight bounds; DRAW SHAPE commits it.
                                 detectDragGestures(
                                     onDragStart = { offset ->
                                         shapePoints = listOf(offset.x to offset.y)
@@ -554,29 +728,10 @@ fun PhotoEditorScreen(
                         }
                 ) {
                     if (isComparing) return@Canvas
-                    // Draw committed paths
-                    editorState.drawingPaths.forEach { dp ->
-                        if (dp.points.size > 1) {
-                            val path = Path().apply {
-                                moveTo(dp.points.first().first, dp.points.first().second)
-                                for (i in 1 until dp.points.size) {
-                                    lineTo(dp.points[i].first, dp.points[i].second)
-                                }
-                            }
-                            drawPath(
-                                path = path,
-                                color = Color(dp.color.toULong()),
-                                style = Stroke(
-                                    width = dp.strokeWidth,
-                                    cap = StrokeCap.Round,
-                                    join = StrokeJoin.Round
-                                )
-                            )
-                        }
-                    }
-
-                    // Draw committed shapes (vector overlays in preview-box pixels)
+                    // Committed HIGHLIGHT shapes only — rect / oval / line / arrow live
+                    // in the embedded library canvas with native move + scale.
                     editorState.shapes.forEach { shape ->
+                        if (shape.type != ShapeType.HIGHLIGHT) return@forEach
                         if (shape.points.size < 2) return@forEach
                         val a = shape.points.first()
                         val b = shape.points.last()
@@ -585,63 +740,15 @@ fun PhotoEditorScreen(
                         val right = maxOf(a.first, b.first)
                         val bottom = maxOf(a.second, b.second)
                         val base = Color(shape.color.toULong())
-                        val stroke = Stroke(
-                            width = shape.strokeWidth,
-                            cap = StrokeCap.Round,
-                            join = StrokeJoin.Round
+                        drawRect(
+                            color = base.copy(alpha = (0.35f + shape.fillAlpha * 0.4f).coerceIn(0f, 0.75f)),
+                            topLeft = Offset(left, top),
+                            size = Size(right - left, bottom - top)
                         )
-                        when (shape.type) {
-                            ShapeType.RECT -> {
-                                if (shape.fillAlpha > 0f) {
-                                    drawRect(
-                                        color = base.copy(alpha = shape.fillAlpha),
-                                        topLeft = Offset(left, top),
-                                        size = Size(right - left, bottom - top)
-                                    )
-                                }
-                                drawRect(
-                                    color = base,
-                                    topLeft = Offset(left, top),
-                                    size = Size(right - left, bottom - top),
-                                    style = stroke
-                                )
-                            }
-                            ShapeType.CIRCLE -> {
-                                val cx = (left + right) / 2f
-                                val cy = (top + bottom) / 2f
-                                val rad = minOf(right - left, bottom - top) / 2f
-                                if (shape.fillAlpha > 0f) {
-                                    drawCircle(color = base.copy(alpha = shape.fillAlpha), radius = rad, center = Offset(cx, cy))
-                                }
-                                drawCircle(color = base, radius = rad, center = Offset(cx, cy), style = stroke)
-                            }
-                            ShapeType.HIGHLIGHT -> {
-                                drawRect(
-                                    color = base.copy(alpha = (0.35f + shape.fillAlpha * 0.4f).coerceIn(0f, 0.75f)),
-                                    topLeft = Offset(left, top),
-                                    size = Size(right - left, bottom - top)
-                                )
-                            }
-                            ShapeType.ARROW -> {
-                                drawLine(start = Offset(a.first, a.second), end = Offset(b.first, b.second), color = base, strokeWidth = shape.strokeWidth, cap = StrokeCap.Round)
-                                val angle = atan2(b.second - a.second, b.first - a.first)
-                                val headLen = 24f
-                                val headAng = 0.5f
-                                listOf(angle + PI.toFloat() - headAng, angle + PI.toFloat() + headAng).forEach { ha ->
-                                    drawLine(
-                                        start = Offset(b.first, b.second),
-                                        end = Offset(b.first + cos(ha) * headLen, b.second + sin(ha) * headLen),
-                                        color = base,
-                                        strokeWidth = shape.strokeWidth,
-                                        cap = StrokeCap.Round
-                                    )
-                                }
-                            }
-                        }
                     }
 
-                    // In-progress shape drag preview
-                    if (editorState.activeTool == "SHAPES" && shapePoints.size >= 2) {
+                    // In-progress highlight drag preview
+                    if (editorState.activeTool == "SHAPES" && currentShapeType == ShapeType.HIGHLIGHT && shapePoints.size >= 2) {
                         val a = shapePoints.first()
                         val b = shapePoints.last()
                         drawRect(
@@ -652,107 +759,8 @@ fun PhotoEditorScreen(
                         )
                     }
 
-                    // Draw currently dragging path
-                    if (currentDoodlePoints.size > 1) {
-                        val activePath = Path().apply {
-                            moveTo(currentDoodlePoints.first().first, currentDoodlePoints.first().second)
-                            for (i in 1 until currentDoodlePoints.size) {
-                                lineTo(currentDoodlePoints[i].first, currentDoodlePoints[i].second)
-                            }
-                        }
-                        drawPath(
-                            path = activePath,
-                            color = selectedBrushColor.copy(alpha = brushAlpha),
-                            style = Stroke(
-                                width = brushStrokeWidth,
-                                cap = StrokeCap.Round,
-                                join = StrokeJoin.Round
-                            )
-                        )
-                    }
                 }
 
-                // Text Overlay Preview — fully draggable anywhere on the image
-                // (hidden while comparing with the original)
-                if (editingTextString.isNotBlank() && !isComparing) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .offset { IntOffset(textDragOffset.x.roundToInt(), textDragOffset.y.roundToInt()) }
-                                .pointerInput(Unit) {
-                                    detectDragGestures(
-                                        onDragStart = { },
-                                        onDrag = { change, dragAmount ->
-                                            change.consume()
-                                            val next = textDragOffset + dragAmount
-                                            // Keep text inside visible bounds
-                                            val maxX = if (previewBoxSize.width > 0) previewBoxSize.width / 2.5f else 500f
-                                            val maxY = if (previewBoxSize.height > 0) previewBoxSize.height / 2.5f else 500f
-                                            textDragOffset = Offset(
-                                                x = next.x.coerceIn(-maxX, maxX),
-                                                y = next.y.coerceIn(-maxY, maxY)
-                                            )
-                                        }
-                                    )
-                                }
-                                .then(
-                                    if (hasBackgroundBadge) {
-                                        Modifier
-                                            .background(
-                                                selectedBadgeColor.copy(alpha = badgeAlpha),
-                                                RectangleShape
-                                            )
-                                            .border(2.dp, NeoBorder, RectangleShape)
-                                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                                    } else {
-                                        Modifier.padding(8.dp)
-                                    }
-                                )
-                        ) {
-                            // Contrast outline picked from text luminance, so the caption
-                            // stays readable over dark AND bright photos. Outline pass
-                            // draws first (underneath), fill pass with drop shadow on top.
-                            val outlineColor =
-                                if (selectedTextColor.luminance() > 0.5f) NeoDark else NeoWhite
-                            val align = when (selectedTextAlign) {
-                                "LEFT" -> TextAlign.Start
-                                "RIGHT" -> TextAlign.End
-                                else -> TextAlign.Center
-                            }
-                            val captionStyle = TextStyle(
-                                fontSize = fontSizeSp.sp,
-                                fontFamily = FontHelper.getFontFamilyForId(selectedFontId),
-                                fontWeight = FontHelper.getFontWeightForId(selectedFontId),
-                                fontStyle = FontHelper.getFontStyleForId(selectedFontId),
-                                textAlign = align
-                            )
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = editingTextString,
-                                    style = captionStyle.copy(
-                                        color = outlineColor,
-                                        drawStyle = Stroke(width = 8f)
-                                    )
-                                )
-                                Text(
-                                    text = editingTextString,
-                                    style = captionStyle.copy(
-                                        color = selectedTextColor,
-                                        shadow = Shadow(
-                                            color = Color.Black.copy(alpha = 0.6f),
-                                            offset = Offset(3f, 3f),
-                                            blurRadius = 6f
-                                        )
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
             }
         }
 
@@ -1160,23 +1168,13 @@ fun PhotoEditorScreen(
                                         }
                                     }
 
-                                    // Undo & Clear
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        NeoIconButton(
-                                            icon = Icons.AutoMirrored.Filled.Undo,
-                                            contentDescription = "Undo",
-                                            onClick = onUndoDrawing,
-                                            backgroundColor = NeoWhite,
-                                            size = 32.dp,
-                                            shadowOffset = 1.dp
-                                        )
-                                        NeoBadge(
-                                            text = "CLEAR",
-                                            backgroundColor = NeoPink,
-                                            textColor = NeoWhite,
-                                            modifier = Modifier.clickable(onClick = onClearDrawing)
-                                        )
-                                    }
+                                    // Eraser toggle (library eraser paints transparency)
+                                    NeoButton(
+                                        text = if (eraserOn) "ERASER ON" else "ERASER",
+                                        onClick = { eraserOn = !eraserOn },
+                                        containerColor = if (eraserOn) NeoYellow else NeoWhite,
+                                        modifier = Modifier.height(40.dp)
+                                    )
                                 }
 
                                 Spacer(modifier = Modifier.height(6.dp))
@@ -1611,6 +1609,56 @@ fun PhotoEditorScreen(
                                         modifier = Modifier.width(36.dp)
                                     )
                                 }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                // Commit to the embedded canvas (add new, or update tapped text).
+                                // The caption then moves + scales natively with pinch gestures.
+                                NeoButton(
+                                    text = if (pendingTextEditView != null) "UPDATE TEXT" else "ADD TEXT",
+                                    onClick = { commitLibText() },
+                                    containerColor = NeoYellow,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+
+                        "EMOJI" -> {
+                            val emojis = remember {
+                                listOf(
+                                    "😀", "😎", "😍", "🤣", "😮", "😭", "😡", "🥳",
+                                    "❤️", "🔥", "⭐", "🎉", "👍", "👏", "🙏", "💯",
+                                    "🐱", "🐶", "🌹", "⚽", "🚀", "💡", "🎵", "✨"
+                                )
+                            }
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    text = "TAP TO STAMP — DRAG TO MOVE, PINCH TO SCALE",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NeoDark.copy(alpha = 0.7f)
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                LazyVerticalGrid(
+                                    columns = GridCells.Fixed(6),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    items(emojis) { emoji ->
+                                        Box(
+                                            modifier = Modifier
+                                                .aspectRatio(1f)
+                                                .background(NeoWhite, RectangleShape)
+                                                .border(1.5.dp, NeoBorder, RectangleShape)
+                                                .clickable {
+                                                    libEditor?.addEmoji(emoji)
+                                                    syncLibUndo()
+                                                },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(text = emoji, fontSize = 22.sp)
+                                        }
+                                    }
+                                }
                             }
                         }
 // SHAPES panel (branch of the tool when above)
@@ -1678,29 +1726,40 @@ fun PhotoEditorScreen(
                                     Text("${shapeStrokeWidth.toInt()}", fontSize = 11.sp, fontWeight = FontWeight.Black)
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))
-                                NeoButton(
-                                    text = "DRAW SHAPE",
-                                    onClick = {
-                                        if (shapePoints.size >= 2) {
-                                            onAddShape(
-                                                EditorShape(
-                                                    type = currentShapeType,
-                                                    points = shapePoints,
-                                                    color = selectedShapeColor.value.toLong(),
-                                                    strokeWidth = shapeStrokeWidth,
-                                                    fillAlpha = shapeFillAlpha,
-                                                    anchorW = previewBoxSize.width,
-                                                    anchorH = previewBoxSize.height
+                                // Rect / oval / arrow draw directly on the canvas with native
+                                // move + scale. Highlight commits through our own overlay.
+                                if (currentShapeType == ShapeType.HIGHLIGHT) {
+                                    NeoButton(
+                                        text = "DRAW SHAPE",
+                                        onClick = {
+                                            if (shapePoints.size >= 2) {
+                                                onAddShape(
+                                                    EditorShape(
+                                                        type = currentShapeType,
+                                                        points = shapePoints,
+                                                        color = selectedShapeColor.value.toLong(),
+                                                        strokeWidth = shapeStrokeWidth,
+                                                        fillAlpha = shapeFillAlpha,
+                                                        anchorW = previewBoxSize.width,
+                                                        anchorH = previewBoxSize.height
+                                                    )
                                                 )
-                                            )
-                                            shapePoints = emptyList()
-                                        } else {
-                                            onClearShapes()
-                                        }
-                                    },
-                                    containerColor = NeoCyan,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                                                shapePoints = emptyList()
+                                            } else {
+                                                onClearShapes()
+                                            }
+                                        },
+                                        containerColor = NeoCyan,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                } else {
+                                    Text(
+                                        text = "DRAW DIRECTLY ON THE PHOTO — PINCH TO MOVE / SCALE",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = NeoDark.copy(alpha = 0.7f)
+                                    )
+                                }
                             }
                         }
 
@@ -1773,14 +1832,15 @@ fun PhotoEditorScreen(
                      verticalAlignment = Alignment.CenterVertically
                  ) {
                     val tools = listOf(
-                        "FILTERS" to Icons.Default.Tune,
+                        "FILTERS" to Icons.Default.PhotoFilter,
                         "CROP" to Icons.Default.Crop,
-                        "ADJUST" to Icons.Default.RestartAlt,
+                        "ADJUST" to Icons.Default.Tune,
                         "DOODLE" to Icons.Default.Brush,
                         "TEXT" to Icons.Default.FontDownload,
+                        "EMOJI" to Icons.Default.InsertEmoticon,
                         "SHAPES" to Icons.Default.CropSquare,
                         "RETOUCH" to Icons.Default.Healing,
-                        "DETAIL" to Icons.Default.TouchApp
+                        "DETAIL" to Icons.Default.AutoFixHigh
                     )
 
                      tools.forEach { (toolName, icon) ->
@@ -1895,10 +1955,7 @@ fun PhotoEditorScreen(
                 confirmButton = {
                     NeoButton(
                         text = "SAVE COPY",
-                        onClick = {
-                            showSaveDialog = false
-                            onSave(true)
-                        },
+                        onClick = { doSave(true, fullWorkingRenderer) },
                         containerColor = NeoMint
                     )
                 },
@@ -1906,10 +1963,7 @@ fun PhotoEditorScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         NeoButton(
                             text = "OVERWRITE",
-                            onClick = {
-                                showSaveDialog = false
-                                onSave(false)
-                            },
+                            onClick = { doSave(false, fullWorkingRenderer) },
                             containerColor = NeoYellow
                         )
                         NeoButton(

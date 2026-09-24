@@ -373,8 +373,9 @@ fun GalleryApp(viewModel: GalleryViewModel) {
                         onSetExportFormat = { viewModel.setExportFormat(it) },
                         onSetExportQuality = { viewModel.setExportQuality(it) },
                         onSetStripExif = { viewModel.setStripExif(it) },
-                        needsSpatialPreview = viewModel.editorNeedsSpatialPreview(),
-                        previewRenderer = { maxDim -> viewModel.renderPreviewBitmap(maxDim) },
+                        hasPixelWork = viewModel.editorHasPixelWork(),
+                        previewRenderer = { maxDim -> viewModel.renderWorkingBitmap(maxDim) },
+                        fullWorkingRenderer = { viewModel.renderFullWorkingBitmap() },
                         onAddDrawingPath = { path ->
                             viewModel.addDrawingPath(path)
                         },
@@ -384,7 +385,7 @@ fun GalleryApp(viewModel: GalleryViewModel) {
                         onInstallCustomFont = { name, cat ->
                             viewModel.installCustomFont(name, cat)
                         },
-                        onSave = { asNew -> viewModel.saveEditedPhoto(asNew) },
+                        onSaveFull = { asNew, composed -> viewModel.saveEditedPhoto(asNew, composed) },
                         onClose = { viewModel.closeEditor() }
                     )
                 }
